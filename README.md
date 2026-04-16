@@ -11,9 +11,10 @@ This project allows you to retrieve:
 - Individual video metadata
 
 It is designed to be:
-- DRY
-- Strongly typed where it matters
-- Easy to integrate into existing Java backends
+- Plug and play
+- API independent
+
+Heavily inspired by the python package [Scrapetube](https://github.com/dermasmid/scrapetube), but rewritten in Java for better typing & Java integration
 
 ---
 
