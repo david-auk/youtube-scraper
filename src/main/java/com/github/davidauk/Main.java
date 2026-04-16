@@ -1,17 +1,60 @@
 package com.github.davidauk;
 
-//TIP To <b>Run</b> code, press <shortcut actionId="Run"/> or
-// click the <icon src="AllIcons.Actions.Execute"/> icon in the gutter.
-public class Main {
-    public static void main(String[] args) {
-        //TIP Press <shortcut actionId="ShowIntentionActions"/> with your caret at the highlighted text
-        // to see how IntelliJ IDEA suggests fixing it.
-        System.out.printf("Hello and welcome!");
+import com.fasterxml.jackson.databind.JsonNode;
+import com.github.davidauk.client.YoutubeClient;
+import com.github.davidauk.model.ChannelRequest;
+import com.github.davidauk.model.ChannelSort;
+import com.github.davidauk.model.ContentType;
+import com.github.davidauk.model.Video;
 
-        for (int i = 1; i <= 5; i++) {
-            //TIP Press <shortcut actionId="Debug"/> to start debugging your code. We have set one <icon src="AllIcons.Debugger.Db_set_breakpoint"/> breakpoint
-            // for you, but you can always add more by pressing <shortcut actionId="ToggleLineBreakpoint"/>.
-            System.out.println("i = " + i);
+import java.time.Duration;
+import java.util.LinkedList;
+import java.util.List;
+
+public final class Main {
+
+    public static void main(String[] args) throws Exception {
+        YoutubeClient client = new YoutubeClient();
+
+        List<Video> channelVideos = client.getChannel(new ChannelRequest(
+                null,
+                null,
+                "lekkerspelen",
+                null,
+                Duration.ofSeconds(1),
+                null,
+                ChannelSort.NEWEST,
+                ContentType.VIDEOS
+        ));
+
+        System.out.println("Channel results:");
+
+        LinkedList<Video> memberOnlyVideos = new LinkedList<>();
+
+        for (Video video : channelVideos) {
+            if (video.membersOnly()) {
+                System.out.println(video.title());
+                memberOnlyVideos.add(video);
+            }
         }
+
+        System.out.println("Members only results:" + memberOnlyVideos.size() + "\n\n");
+
+
+//        List<JsonNode> playlistVideos = client.getPlaylist(new PlaylistRequest(
+//                "PL8mG-RkN2uTw7PhlnAr4pZZz2QubIbujH",
+//                5,
+//                Duration.ofSeconds(1),
+//                null
+//        ));
+//
+//        System.out.println("\nPlaylist results:");
+//        for (JsonNode video : playlistVideos) {
+//            System.out.println(video);
+//        }
+
+        JsonNode videoInfo = client.getVideo("dQw4w9WgXcQ");
+        System.out.println("\nSingle video:");
+        System.out.println(videoInfo);
     }
 }
