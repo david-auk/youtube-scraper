@@ -1,0 +1,46 @@
+name: release
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  publish:
+    name: Publish to Maven Central
+    runs-on: ubuntu-latest
+    if: startsWith(github.event.release.tag_name, 'v')
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: gradle
+
+      # Optional: keep a quick sanity check before publish.
+      # You can remove this if you prefer the tests workflow to be the only gate.
+      - name: Build & test (excluding @Tag("latest"))
+        run: ./gradlew clean test -Djunit.jupiter.tags.exclude=latest --no-daemon --stacktrace
+
+      - name: Configure Gradle credentials
+        run: |
+          mkdir -p ~/.gradle
+          {
+            echo "mavenCentralUsername=$MAVEN_CENTRAL_USERNAME";
+            echo "mavenCentralPassword=$MAVEN_CENTRAL_PASSWORD";
+          } >> ~/.gradle/gradle.properties
+        env:
+          MAVEN_CENTRAL_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          MAVEN_CENTRAL_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+
+      - name: Publish to Maven Central (Portal)
+        env:
+          MAVEN_CENTRAL_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          MAVEN_CENTRAL_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
+          SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
+        run: ./gradlew publishAllPublicationsToMavenCentral --no-daemon --stacktrace -Djunit.jupiter.tags.exclude=latest
