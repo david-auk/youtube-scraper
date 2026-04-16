@@ -1,7 +1,7 @@
 # YouTube Scraper (Java)
 
 [![Maven Central](https://img.shields.io/maven-central/v/io.github.david-auk/youtube-scraper?logo=apachemaven&label=Maven%20Central)](https://central.sonatype.com/artifact/io.github.david-auk/youtube-scraper)
-![GitHub License](https://img.shields.io/github/license/david-auk/youtube-scraper)
+[![GitHub License](https://img.shields.io/github/license/david-auk/youtube-scraper)](https://github.com/david-auk/youtube-scraper/blob/main/LICENSE)
 
 A lightweight, dependency-minimal YouTube scraper written in Java.
 
