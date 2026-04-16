@@ -1,3 +1,6 @@
+import com.vanniktech.maven.publish.JavaLibrary
+import com.vanniktech.maven.publish.JavadocJar
+
 plugins {
     `java-library`
     id("com.vanniktech.maven.publish") version "0.34.0"
@@ -18,7 +21,6 @@ java {
         languageVersion.set(JavaLanguageVersion.of(21))
     }
     withSourcesJar()
-    withJavadocJar()
 }
 
 repositories {
@@ -27,8 +29,8 @@ repositories {
 
 dependencies {
     implementation("com.fasterxml.jackson.core:jackson-databind:2.21.2")
-    implementation("com.fasterxml.jackson.module:jackson-module-parameter-names:2.17.2")
-    implementation("com.fasterxml.jackson.datatype:jackson-datatype-jsr310:2.17.2")
+    implementation("com.fasterxml.jackson.module:jackson-module-parameter-names:2.21.2")
+    implementation("com.fasterxml.jackson.datatype:jackson-datatype-jsr310:2.21.2")
 
     testImplementation(platform("org.junit:junit-bom:5.10.0"))
     testImplementation("org.junit.jupiter:junit-jupiter")
@@ -39,8 +41,19 @@ tasks.test {
     useJUnitPlatform()
 }
 
+tasks.matching { it.name == "generateMetadataFileForMavenPublication" }.configureEach {
+    dependsOn(tasks.matching { it.name == "plainJavadocJar" })
+}
+
 mavenPublishing {
     coordinates(group.toString(), "youtube-scraper", version.toString())
+
+    configure(
+        JavaLibrary(
+            javadocJar = JavadocJar.Javadoc(),
+            sourcesJar = true
+        )
+    )
 
     publishToMavenCentral()
     signAllPublications()
