@@ -23,6 +23,8 @@ Heavily inspired by the python package [Scrapetube](https://github.com/dermasmid
 - Fetch videos from a channel (videos, shorts, streams)
 - Fetch videos from a playlist
 - Fetch metadata for a single video
+- Resolve channel IDs from public usernames/handles (e.g. `@username`)
+- Support for channel sorting (NEWEST, POPULAR, OLDEST)
 - Clean mapping to a simple `Video` object
 - Raw JSON access for advanced/custom use cases
 
@@ -43,21 +45,26 @@ YoutubeClient client = new YoutubeClient();
 ### 2. Fetch channel videos
 
 ```java
-List<Video> videos = client.getChannel(new ChannelRequest(
-        null,
-        null,
-        "LinusTechTips",
+// The third argument can be a channel ID, username, or handle (e.g. "@LinusTechTips")
+List<Video> videos = client.getChannel("LinusTechTips", new ChannelRequest(
         5,
         Duration.ofSeconds(1),
         null,
-        ChannelSort.NEWEST,
+        ChannelSort.NEWEST, // also supports POPULAR and OLDEST
         ContentType.VIDEOS
 ));
-
-for (Video video : videos) {
-    System.out.println(video.title());
-}
 ```
+
+---
+
+### Resolving a channel ID from a username
+
+```java
+String channelId = client.resolveChannelIdFromUsername("@LinusTechTips");
+System.out.println(channelId);
+```
+
+This is useful if you want to normalize all requests to a canonical channel ID (`UC...`).
 
 ---
 
@@ -109,7 +116,10 @@ This keeps the API clean while still allowing access to raw data when needed.
 If you need full flexibility, you can still use the raw methods:
 
 ```java
-List<JsonNode> raw = client.getChannelRaw(request);
+List<JsonNode> raw = client.getChannelRaw(
+        "LinusTechTips",
+        request
+);
 ```
 
 This is useful when YouTube changes structure, or you need additional fields.
@@ -131,7 +141,7 @@ Use at your own risk.
 ## Future Plans
 
 - Add typed models (optional DTO layer)
-- Improve resilience against YouTube changes
+- Further improve resilience against YouTube changes
 - Add caching support
 - Add rate limiting utilities
 - Possibly support search (currently intentionally excluded)

@@ -2,13 +2,9 @@ package com.github.davidauk;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.github.davidauk.client.YoutubeClient;
-import com.github.davidauk.model.ChannelRequest;
-import com.github.davidauk.model.ChannelSort;
-import com.github.davidauk.model.ContentType;
-import com.github.davidauk.model.Video;
+import com.github.davidauk.model.*;
 
 import java.time.Duration;
-import java.util.LinkedList;
 import java.util.List;
 
 public final class Main {
@@ -16,32 +12,21 @@ public final class Main {
     public static void main(String[] args) throws Exception {
         YoutubeClient client = new YoutubeClient();
 
-        List<Video> channelVideos = client.getChannel(new ChannelRequest(
-                null,
-                null,
-                "lekkerspelen",
+        List<Video> videos = client.getChannel("LinusTechTips", new ChannelRequest(
                 5,
                 Duration.ofSeconds(1),
                 null,
-                ChannelSort.NEWEST,
-                ContentType.VIDEOS
+                ChannelSort.NEWEST, // also supports POPULAR and OLDEST
+                ContentType.STREAMS
         ));
 
         System.out.println("Channel results:");
 
-        LinkedList<Video> memberOnlyVideos = new LinkedList<>();
-
-        for (Video video : channelVideos) {
-            if (video.membersOnly()) {
+        for (Video video : videos) {
                 System.out.println(video.title());
-                memberOnlyVideos.add(video);
-            }
         }
 
-        System.out.println("Members only results:" + memberOnlyVideos.size() + "\n\n");
-
-
-//        List<JsonNode> playlistVideos = client.getPlaylist(new PlaylistRequest(
+//        List<JsonNode> playlistVideos = client.getPlaylistRaw(new PlaylistRequest(
 //                "PL8mG-RkN2uTw7PhlnAr4pZZz2QubIbujH",
 //                5,
 //                Duration.ofSeconds(1),
@@ -52,9 +37,9 @@ public final class Main {
 //        for (JsonNode video : playlistVideos) {
 //            System.out.println(video);
 //        }
-
-        JsonNode videoInfo = client.getVideo("dQw4w9WgXcQ");
-        System.out.println("\nSingle video:");
-        System.out.println(videoInfo);
+//
+//        JsonNode videoInfo = client.getVideo("dQw4w9WgXcQ");
+//        System.out.println("\nSingle video:");
+//        System.out.println(videoInfo);
     }
 }
