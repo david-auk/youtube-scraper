@@ -1,6 +1,7 @@
-
-
 # YouTube Scraper (Java)
+
+[![Maven Central](https://img.shields.io/maven-central/v/io.github.david-auk/youtube-scraper?logo=apachemaven&label=Maven%20Central)](https://central.sonatype.com/artifact/io.github.david-auk/youtube-scraper)
+[![GitHub License](https://img.shields.io/github/license/david-auk/youtube-scraper)](https://github.com/david-auk/youtube-scraper/blob/main/LICENSE)
 
 A lightweight, dependency-minimal YouTube scraper written in Java.
 
@@ -10,9 +11,10 @@ This project allows you to retrieve:
 - Individual video metadata
 
 It is designed to be:
-- DRY
-- Strongly typed where it matters
-- Easy to integrate into existing Java backends
+- Plug and play
+- API independent
+
+Heavily inspired by the python package [Scrapetube](https://github.com/dermasmid/scrapetube), but rewritten in Java for better typing & Java integration
 
 ---
 
@@ -25,18 +27,8 @@ It is designed to be:
 - Raw JSON access for advanced/custom use cases
 
 ---
+## [Install the Maven package](https://central.sonatype.com/artifact/io.github.david-auk/youtube-scraper)
 
-## Installation (Soon)
-
-I'm currently working on publishing this package to **Maven Central**, so it can be easily included in other Java projects.
-
-Once available, you will be able to add it like:
-
-```gradle
-implementation("com.example:youtube-scraper:VERSION")
-```
-
----
 
 ## Basic Usage
 
@@ -120,7 +112,7 @@ If you need full flexibility, you can still use the raw methods:
 List<JsonNode> raw = client.getChannelRaw(request);
 ```
 
-This is useful when YouTube changes structure or you need additional fields.
+This is useful when YouTube changes structure, or you need additional fields.
 
 ---
 
@@ -138,7 +130,6 @@ Use at your own risk.
 
 ## Future Plans
 
-- Publish to Maven Central
 - Add typed models (optional DTO layer)
 - Improve resilience against YouTube changes
 - Add caching support
