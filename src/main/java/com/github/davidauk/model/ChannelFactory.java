@@ -19,7 +19,7 @@ public class ChannelFactory {
             "https?://(www\\.)?youtube\\.com/@([A-Za-z0-9._-]+)"
     );
 
-    public static Channel buildChannelRequest(String channelDifferentiator, YoutubeClient client) throws IOException, InterruptedException {
+    public static Channel buildChannel(String channelDifferentiator, YoutubeClient client) throws IOException, InterruptedException {
 
         channelDifferentiator = channelDifferentiator.trim();
 

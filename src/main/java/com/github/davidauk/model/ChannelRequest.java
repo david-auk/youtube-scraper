@@ -1,5 +1,7 @@
 package com.github.davidauk.model;
 
+import com.github.davidauk.model.content.ContentType;
+
 import java.net.ProxySelector;
 import java.time.Duration;
 

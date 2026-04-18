@@ -4,11 +4,15 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.github.davidauk.model.*;
+import com.github.davidauk.model.Thumbnail;
+import com.github.davidauk.model.content.Video;
 import com.github.davidauk.util.HtmlJsonExtractor;
 import com.github.davidauk.util.JsonNavigator;
 
 import java.io.IOException;
 import java.net.ProxySelector;
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -16,7 +20,6 @@ import java.util.Objects;
 
 public final class YoutubeClient {
     private static final String BROWSE_API_ENDPOINT = "https://www.youtube.com/youtubei/v1/browse";
-
     private final ObjectMapper objectMapper;
 
     /**
@@ -51,7 +54,7 @@ public final class YoutubeClient {
      * @return a list of simplified videos extracted from the channel page
      */
     public List<Video> getChannel(String channelDifferentiator, ChannelRequest request) throws IOException, InterruptedException {
-        return getChannel(ChannelFactory.buildChannelRequest(channelDifferentiator, this), request);
+        return getChannel(ChannelFactory.buildChannel(channelDifferentiator, this), request);
     }
 
     /**
@@ -144,7 +147,7 @@ public final class YoutubeClient {
      * @return raw renderer nodes that match the requested channel content type
      */
     public List<JsonNode> getChannelRaw(String channelDifferentiator, ChannelRequest request) throws IOException, InterruptedException {
-        return getChannelRaw(ChannelFactory.buildChannelRequest(channelDifferentiator, this), request);
+        return getChannelRaw(ChannelFactory.buildChannel(channelDifferentiator, this), request);
     }
 
     /**
@@ -338,7 +341,12 @@ public final class YoutubeClient {
         String description = extractText(node.get("descriptionSnippet"));
         String publishedTime = extractText(node.get("publishedTimeText"));
         String duration = extractText(node.get("lengthText"));
-        String thumbnailUrl = extractFirstThumbnailUrl(node.get("thumbnail"));
+        List<Thumbnail> thumbnailOptions;
+        try {
+            thumbnailOptions = extractThumbnails(node.get("thumbnail"));
+        } catch (URISyntaxException e) {
+            throw new RuntimeException(e);
+        }
         boolean membersOnly = hasBadgeLabel(node.get("badges"), "Members only");
         boolean verified = hasBadgeLabel(node.get("ownerBadges"), "Verified");
 
@@ -350,9 +358,10 @@ public final class YoutubeClient {
                 id,
                 title,
                 description,
-                publishedTime,
+                null,
+//                publishedTime,
                 duration,
-                thumbnailUrl,
+                thumbnailOptions,
                 membersOnly,
                 verified
         );
@@ -372,6 +381,23 @@ public final class YoutubeClient {
         }
 
         return field.asText();
+    }
+
+    /**
+     * Returns the first non-blank value from the supplied candidates.
+     */
+    private String firstNonBlank(String... values) {
+        if (values == null) {
+            return null;
+        }
+
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                return value;
+            }
+        }
+
+        return null;
     }
 
     /**
@@ -416,25 +442,29 @@ public final class YoutubeClient {
     }
 
     /**
-     * Returns the first thumbnail URL from a YouTube thumbnail block.
+     * Returns the list of thumbnail options with URL from a YouTube thumbnail block.
      */
-    private String extractFirstThumbnailUrl(JsonNode thumbnailNode) {
+    private List<Thumbnail> extractThumbnails(JsonNode thumbnailNode) throws URISyntaxException {
+        List<Thumbnail> thumbnails = new ArrayList<>();
+
         if (thumbnailNode == null || thumbnailNode.isMissingNode() || thumbnailNode.isNull()) {
             return null;
         }
 
-        JsonNode thumbnails = thumbnailNode.get("thumbnails");
-        if (thumbnails == null || !thumbnails.isArray() || thumbnails.isEmpty()) {
+        JsonNode thumbnailsJson = thumbnailNode.get("thumbnails");
+        if (thumbnailsJson == null || !thumbnailsJson.isArray() || thumbnailsJson.isEmpty()) {
             return null;
         }
 
-        JsonNode firstThumbnail = thumbnails.get(0);
-        if (firstThumbnail == null || firstThumbnail.isNull()) {
-            return null;
+        for (JsonNode thumbnailJson : thumbnailsJson) {
+            thumbnails.add(new Thumbnail(
+                    Integer.parseInt(thumbnailJson.get("width").asText()),
+                    Integer.parseInt(thumbnailJson.get("height").asText()),
+                    new URI(thumbnailJson.get("url").asText())
+            ));
         }
 
-        JsonNode url = firstThumbnail.get("url");
-        return url == null || url.isNull() ? null : url.asText();
+        return thumbnails;
     }
 
     /**
@@ -503,14 +533,127 @@ public final class YoutubeClient {
         );
     }
 
+    // (collectSortCandidatesByLabel, collectSortCandidatesByLabelRecursive, extractSortCandidateLabel,
+    //  extractContinuationDataFromSortCandidate, findContinuationDataRecursively) methods removed.
+
+    /**
+     * Extracts continuation data when both required fields live on the same node.
+     */
+    private ContinuationData continuationDataFromNode(JsonNode node) {
+        if (node == null || node.isMissingNode() || node.isNull()) {
+            return null;
+        }
+
+        JsonNode continuationCommand = node.get("continuationCommand");
+        JsonNode clickTrackingParams = node.get("clickTrackingParams");
+
+        if (continuationCommand == null || clickTrackingParams == null) {
+            return null;
+        }
+
+        String token = continuationCommand.path("token").asText(null);
+        String tracking = clickTrackingParams.asText(null);
+
+        if (token == null || token.isBlank() || tracking == null || tracking.isBlank()) {
+            return null;
+        }
+
+        return new ContinuationData(token, tracking);
+    }
+
+    /**
+     * Extracts continuation data from a command list such as
+     * commandExecutorCommand.commands.
+     */
+    private ContinuationData continuationDataFromCommandList(JsonNode commands) {
+        if (commands == null || commands.isMissingNode() || !commands.isArray()) {
+            return null;
+        }
+
+        for (JsonNode command : commands) {
+            ContinuationData continuationData = continuationDataFromNode(command);
+            if (continuationData != null) {
+                return continuationData;
+            }
+        }
+
+        return null;
+    }
+    /**
+     * Resolves sort continuation data from chip-based sort controls.
+     */
+    private ContinuationData findSortContinuationInChipViewModels(JsonNode data, String expectedLabel) {
+        List<JsonNode> chips = JsonNavigator.findAll(data, "chipViewModel");
+        for (JsonNode chip : chips) {
+            String label = firstNonBlank(
+                    textAt(chip, "accessibilityLabel"),
+                    textAt(chip, "text"),
+                    extractText(chip.get("title"))
+            );
+
+            if (!expectedLabel.equals(label)) {
+                continue;
+            }
+
+            JsonNode commandRoot = chip.path("tapCommand").path("innertubeCommand");
+
+            ContinuationData direct = continuationDataFromNode(commandRoot);
+            if (direct != null) {
+                return direct;
+            }
+
+            ContinuationData nested = continuationDataFromCommandList(
+                    commandRoot.path("commandExecutorCommand").path("commands")
+            );
+            if (nested != null) {
+                return nested;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Resolves sort continuation data from sheet/list style sort controls.
+     */
+    private ContinuationData findSortContinuationInListItemViewModels(JsonNode data, String expectedLabel) {
+        List<JsonNode> items = JsonNavigator.findAll(data, "listItemViewModel");
+        for (JsonNode item : items) {
+            String label = firstNonBlank(
+                    textAt(item.path("title"), "content"),
+                    textAt(item, "accessibilityLabel"),
+                    extractText(item.get("title")),
+                    extractText(item.get("text"))
+            );
+
+            if (!expectedLabel.equals(label)) {
+                continue;
+            }
+
+            JsonNode commandRoot = item.path("rendererContext")
+                    .path("commandContext")
+                    .path("onTap")
+                    .path("innertubeCommand");
+
+            ContinuationData direct = continuationDataFromNode(commandRoot);
+            if (direct != null) {
+                return direct;
+            }
+
+            ContinuationData nested = continuationDataFromCommandList(
+                    commandRoot.path("commandExecutorCommand").path("commands")
+            );
+            if (nested != null) {
+                return nested;
+            }
+        }
+
+        return null;
+    }
+
     /**
      * Extracts the continuation token for a channel sort option such as
      * {@code Popular} or {@code Oldest}.
-     *
-     * <p>YouTube currently exposes these sort actions through list item view models
-     * rather than the older chip renderer structure, so this method matches the
-     * desired label and then scans the embedded command list for a
-     * {@code continuationCommand}.
      */
     private ContinuationData getSortContinuationData(JsonNode data, ChannelSort sortBy) {
         String expectedLabel = switch (sortBy) {
@@ -519,39 +662,16 @@ public final class YoutubeClient {
             default -> throw new IllegalStateException("Unexpected value: " + sortBy);
         };
 
-        // Search all sort menu entries and match the human-readable label.
-        List<JsonNode> items = JsonNavigator.findAll(data, "listItemViewModel");
-        for (JsonNode item : items) {
-            String label = item.path("title").path("content").asText(null);
-            if (!expectedLabel.equals(label)) {
-                continue;
-            }
-
-            // The selected sort action stores its continuation inside a nested command list.
-            JsonNode commands = item.path("rendererContext")
-                    .path("commandContext")
-                    .path("onTap")
-                    .path("innertubeCommand")
-                    .path("commandExecutorCommand")
-                    .path("commands");
-
-            if (!commands.isArray()) {
-                continue;
-            }
-
-            for (JsonNode command : commands) {
-                JsonNode continuationCommand = command.get("continuationCommand");
-                JsonNode clickTrackingParams = command.get("clickTrackingParams");
-
-                if (continuationCommand != null && clickTrackingParams != null) {
-                    return new ContinuationData(
-                            continuationCommand.path("token").asText(),
-                            clickTrackingParams.asText()
-                    );
-                }
-            }
+        ContinuationData fromChipViewModel = findSortContinuationInChipViewModels(data, expectedLabel);
+        if (fromChipViewModel != null) {
+            return fromChipViewModel;
         }
 
-        return null;
+        ContinuationData fromListItemViewModel = findSortContinuationInListItemViewModels(data, expectedLabel);
+        if (fromListItemViewModel != null) {
+            return fromListItemViewModel;
+        }
+
+        throw new IllegalStateException("Could not resolve continuation data for sort option with label: " + expectedLabel);
     }
 }

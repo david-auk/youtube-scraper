@@ -1,4 +1,4 @@
-package com.github.davidauk.model;
+package com.github.davidauk.model.content;
 
 public enum ContentType {
     VIDEOS("videos", "videoRenderer"),
