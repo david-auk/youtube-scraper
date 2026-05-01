@@ -3,16 +3,17 @@ package com.github.davidauk.client;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.github.davidauk.mapper.PartialVideoMapper;
+import com.github.davidauk.mapper.VideoMapper;
 import com.github.davidauk.model.*;
-import com.github.davidauk.model.Thumbnail;
+import com.github.davidauk.model.content.PartialVideo;
 import com.github.davidauk.model.content.Video;
+import com.github.davidauk.node.*;
 import com.github.davidauk.util.HtmlJsonExtractor;
 import com.github.davidauk.util.JsonNavigator;
 
 import java.io.IOException;
 import java.net.ProxySelector;
-import java.net.URI;
-import java.net.URISyntaxException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -20,6 +21,7 @@ import java.util.Objects;
 
 public final class YoutubeClient {
     private static final String BROWSE_API_ENDPOINT = "https://www.youtube.com/youtubei/v1/browse";
+    private static final int MAX_EMPTY_CONTINUATION_PAGES = 2;
     private final ObjectMapper objectMapper;
 
     /**
@@ -32,17 +34,30 @@ public final class YoutubeClient {
 
     /**
      * Fetches channel content according to the supplied request and converts the
-     * raw YouTube renderer nodes into simplified {@link Video} models.
+     * raw YouTube renderer nodes into overview-level {@link PartialVideo} models.
      *
      * @param channel the already resolved channel reference
      * @param request controls content type, sort order, limit, delay, and proxy usage
-     * @return a list of simplified videos extracted from the channel page
+     * @return a ChannelOverviewResponse containing the channel and its videos
      */
-    public List<Video> getChannel(Channel channel, ChannelRequest request) throws IOException, InterruptedException {
-        return getChannelRaw(channel, request).stream()
-                .map(this::toVideo)
+    public ChannelOverviewResponse getChannel(Channel channel, ChannelRequest request) throws IOException, InterruptedException {
+        List<JsonNode> channelResponse = getChannelRaw(channel, request);
+
+        List<PartialVideo> videos = channelResponse.stream()
+                .map(PartialVideoRendererNode::new)
+                .map(videoNode -> PartialVideoMapper.toPartialVideo(videoNode, request.contentType()))
                 .filter(Objects::nonNull)
                 .toList();
+
+        boolean isVerified = false;
+
+        if (!videos.isEmpty()) {
+            JsonNode channelNode = channelResponse.getFirst();
+            isVerified = new YoutubeBadgeNode(channelNode.get("ownerBadges")).hasLabel("Verified");; // TODO Implement
+        }
+
+
+        return new ChannelOverviewResponse(channel, isVerified, videos);
     }
 
     /**
@@ -51,22 +66,24 @@ public final class YoutubeClient {
      *
      * @param channelDifferentiator a value that can be resolved into a {@link Channel}
      * @param request controls content type, sort order, limit, delay, and proxy usage
-     * @return a list of simplified videos extracted from the channel page
+     * @return a ChannelOverviewResponse containing the channel and its videos
      */
-    public List<Video> getChannel(String channelDifferentiator, ChannelRequest request) throws IOException, InterruptedException {
+    public ChannelOverviewResponse getChannel(String channelDifferentiator, ChannelRequest request) throws IOException, InterruptedException {
         return getChannel(ChannelFactory.buildChannel(channelDifferentiator, this), request);
     }
 
     /**
      * Fetches playlist items and converts the raw YouTube renderer nodes into
-     * simplified {@link Video} models.
+     * simplified {@link PartialVideo} models.
      *
      * @param request controls playlist id, limit, delay, and proxy usage
      * @return a list of simplified videos extracted from the playlist page
      */
-    public List<Video> getPlaylistVideos(PlaylistRequest request) throws IOException, InterruptedException {
+    public List<PartialVideo> getPlaylistVideos(PlaylistRequest request) throws IOException, InterruptedException {
         return getPlaylistRaw(request).stream()
-                .map(this::toVideo)
+                .map(PartialVideoRendererNode::new)
+                // TODO Add content type to PartialVideo
+                .map(videoNode -> PartialVideoMapper.toPartialVideo(videoNode, null))
                 .filter(Objects::nonNull)
                 .toList();
     }
@@ -171,12 +188,38 @@ public final class YoutubeClient {
     }
 
     /**
-     * Fetches the primary information block for a single video page.
+     * Fetches the primary information block for a single video page and converts it to a Video.
+     *
+     * @param videoId the YouTube video id
+     * @return the Video object for the video page
+     */
+    public Video getVideo(String videoId) throws IOException, InterruptedException {
+        return VideoMapper.toVideo(getWatchPage(videoId));
+    }
+
+    public WatchPageNode getWatchPage(String videoId) throws IOException, InterruptedException {
+        YoutubeHttpClient session = new YoutubeHttpClient(null);
+
+        String html = session.get("https://www.youtube.com/watch?v=" + videoId);
+
+        JsonNode initialData = objectMapper.readTree(
+                HtmlJsonExtractor.extract(html, "var ytInitialData = ", 0, "};") + "}"
+        );
+
+        JsonNode playerResponse = objectMapper.readTree(
+                HtmlJsonExtractor.extract(html, "var ytInitialPlayerResponse = ", 0, "};") + "}"
+        );
+
+        return new WatchPageNode(videoId, initialData, playerResponse);
+    }
+
+    /**
+     * Fetches the primary information block for a single video page without converting it.
      *
      * @param videoId the YouTube video id
      * @return the raw {@code videoPrimaryInfoRenderer} node for the video page
      */
-    public JsonNode getVideo(String videoId) throws IOException, InterruptedException {
+    public JsonNode getVideoRaw(String videoId) throws IOException, InterruptedException {
         YoutubeHttpClient session = new YoutubeHttpClient(null);
 
         String url = "https://www.youtube.com/watch?v=" + videoId;
@@ -198,6 +241,10 @@ public final class YoutubeClient {
         }
 
         return result;
+    }
+
+    public Video getVideo(PartialVideo video) throws IOException, InterruptedException {
+        return getVideo(video.id());
     }
 
     /**
@@ -229,6 +276,7 @@ public final class YoutubeClient {
         JsonNode client = null;
         String apiKey = null;
         ContinuationData nextData = null;
+        int emptyContinuationPages = 0;
 
         while (true) {
             JsonNode data;
@@ -236,6 +284,8 @@ public final class YoutubeClient {
             // The first iteration parses the full HTML page to bootstrap client metadata,
             // the initial content tree, and the first continuation token.
             if (isFirst) {
+                isFirst = false;
+
                 String html = session.get(url);
 
                 client = objectMapper.readTree(
@@ -262,8 +312,6 @@ public final class YoutubeClient {
 
                 nextData = getNextData(nextDataSource, sortBy);
 
-                isFirst = false;
-
                 // For alternative sorting, the first page only discovers the ajax
                 // continuation behind the selected sort option. The next loop iteration
                 // performs the real data fetch for that sort order.
@@ -281,6 +329,7 @@ public final class YoutubeClient {
             }
 
             // Extract all matching renderer items from the current response chunk.
+            // TODO If selectorItem is null find all (Stream & Video)
             List<JsonNode> items = JsonNavigator.findAll(data, selectorItem);
             for (JsonNode item : items) {
                 results.add(item);
@@ -291,6 +340,15 @@ public final class YoutubeClient {
 
             if (nextData == null) {
                 break;
+            }
+
+            if (items.isEmpty()) {
+                emptyContinuationPages++;
+                if (emptyContinuationPages >= MAX_EMPTY_CONTINUATION_PAGES) {
+                    break;
+                }
+            } else {
+                emptyContinuationPages = 0;
             }
 
             Thread.sleep(sleep.toMillis());
@@ -326,46 +384,8 @@ public final class YoutubeClient {
         return objectMapper.readTree(responseBody);
     }
 
-    /**
-     * Converts a raw YouTube renderer node into the library's simplified
-     * {@link Video} representation.
-     */
-    private Video toVideo(JsonNode node) {
-        if (node == null || node.isMissingNode()) {
-            return null;
-        }
 
-        // Pull a compact subset of fields that are stable enough for the public model.
-        String id = textAt(node, "videoId");
-        String title = extractText(node.get("title"));
-        String description = extractText(node.get("descriptionSnippet"));
-        String publishedTime = extractText(node.get("publishedTimeText"));
-        String duration = extractText(node.get("lengthText"));
-        List<Thumbnail> thumbnailOptions;
-        try {
-            thumbnailOptions = extractThumbnails(node.get("thumbnail"));
-        } catch (URISyntaxException e) {
-            throw new RuntimeException(e);
-        }
-        boolean membersOnly = hasBadgeLabel(node.get("badges"), "Members only");
-        boolean verified = hasBadgeLabel(node.get("ownerBadges"), "Verified");
 
-        if (id == null && title == null) {
-            return null;
-        }
-
-        return new Video(
-                id,
-                title,
-                description,
-                null,
-//                publishedTime,
-                duration,
-                thumbnailOptions,
-                membersOnly,
-                verified
-        );
-    }
 
     /**
      * Reads a direct text value from a field when that field exists and is not null.
@@ -400,107 +420,8 @@ public final class YoutubeClient {
         return null;
     }
 
-    /**
-     * Extracts user-visible text from common YouTube text shapes such as
-     * {@code simpleText}, {@code runs}, or accessibility labels.
-     */
-    private String extractText(JsonNode node) {
-        if (node == null || node.isMissingNode() || node.isNull()) {
-            return null;
-        }
 
-        // YouTube uses multiple text representations depending on renderer type.
-        JsonNode simpleText = node.get("simpleText");
-        if (simpleText != null && !simpleText.isNull()) {
-            return simpleText.asText();
-        }
 
-        JsonNode runs = node.get("runs");
-        if (runs != null && runs.isArray() && !runs.isEmpty()) {
-            StringBuilder builder = new StringBuilder();
-            for (JsonNode run : runs) {
-                JsonNode text = run.get("text");
-                if (text != null && !text.isNull()) {
-                    if (!builder.isEmpty()) {
-                        builder.append(' ');
-                    }
-                    builder.append(text.asText());
-                }
-            }
-
-            return builder.isEmpty() ? null : builder.toString();
-        }
-
-        JsonNode accessibilityLabel = node.path("accessibility")
-                .path("accessibilityData")
-                .path("label");
-        if (!accessibilityLabel.isMissingNode() && !accessibilityLabel.isNull()) {
-            return accessibilityLabel.asText();
-        }
-
-        return null;
-    }
-
-    /**
-     * Returns the list of thumbnail options with URL from a YouTube thumbnail block.
-     */
-    private List<Thumbnail> extractThumbnails(JsonNode thumbnailNode) throws URISyntaxException {
-        List<Thumbnail> thumbnails = new ArrayList<>();
-
-        if (thumbnailNode == null || thumbnailNode.isMissingNode() || thumbnailNode.isNull()) {
-            return null;
-        }
-
-        JsonNode thumbnailsJson = thumbnailNode.get("thumbnails");
-        if (thumbnailsJson == null || !thumbnailsJson.isArray() || thumbnailsJson.isEmpty()) {
-            return null;
-        }
-
-        for (JsonNode thumbnailJson : thumbnailsJson) {
-            thumbnails.add(new Thumbnail(
-                    Integer.parseInt(thumbnailJson.get("width").asText()),
-                    Integer.parseInt(thumbnailJson.get("height").asText()),
-                    new URI(thumbnailJson.get("url").asText())
-            ));
-        }
-
-        return thumbnails;
-    }
-
-    /**
-     * Checks whether a badge array contains a renderer whose visible or accessible
-     * label matches the expected value.
-     */
-    private boolean hasBadgeLabel(JsonNode badgesNode, String expectedLabel) {
-        if (badgesNode == null || badgesNode.isMissingNode() || !badgesNode.isArray()) {
-            return false;
-        }
-
-        for (JsonNode badge : badgesNode) {
-            JsonNode renderer = badge.get("metadataBadgeRenderer");
-            if (renderer == null || renderer.isNull()) {
-                continue;
-            }
-
-            JsonNode label = renderer.get("label");
-            if (label != null && !label.isNull() && expectedLabel.equals(label.asText())) {
-                return true;
-            }
-
-            JsonNode accessibilityLabel = renderer.path("accessibilityData").path("label");
-            if (!accessibilityLabel.isMissingNode() && !accessibilityLabel.isNull()
-                    && expectedLabel.equals(accessibilityLabel.asText())) {
-                return true;
-            }
-
-            JsonNode tooltip = renderer.get("tooltip");
-            if (tooltip != null && !tooltip.isNull() && expectedLabel.equals(tooltip.asText())) {
-                return true;
-            }
-        }
-
-        return false;
-    }
 
     /**
      * Resolves the continuation payload needed for the next ajax request.
@@ -588,7 +509,7 @@ public final class YoutubeClient {
             String label = firstNonBlank(
                     textAt(chip, "accessibilityLabel"),
                     textAt(chip, "text"),
-                    extractText(chip.get("title"))
+                    new YoutubeTextNode(chip.get("title")).text()
             );
 
             if (!expectedLabel.equals(label)) {
@@ -622,8 +543,8 @@ public final class YoutubeClient {
             String label = firstNonBlank(
                     textAt(item.path("title"), "content"),
                     textAt(item, "accessibilityLabel"),
-                    extractText(item.get("title")),
-                    extractText(item.get("text"))
+                    new YoutubeTextNode(item.get("title")).text(),
+                    new YoutubeTextNode(item.get("text")).text()
             );
 
             if (!expectedLabel.equals(label)) {

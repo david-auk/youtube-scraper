@@ -12,12 +12,16 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 
 public final class YoutubeHttpClient {
 
     private static final String USER_AGENT =
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
                     "(KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36";
+
+    private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(10);
+    private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(30);
 
     private final HttpClient httpClient;
     private String youtubeClientVersion;
@@ -31,6 +35,7 @@ public final class YoutubeHttpClient {
         );
 
         HttpClient.Builder builder = HttpClient.newBuilder()
+                .connectTimeout(CONNECT_TIMEOUT)
                 .followRedirects(HttpClient.Redirect.NORMAL)
                 .cookieHandler(cookieManager);
 
@@ -49,6 +54,7 @@ public final class YoutubeHttpClient {
         String finalUrl = url + (url.contains("?") ? "&" : "?") + "ucbcb=1";
 
         HttpRequest request = HttpRequest.newBuilder(URI.create(finalUrl))
+                .timeout(REQUEST_TIMEOUT)
                 .header("User-Agent", USER_AGENT)
                 .header("Accept-Language", "en")
                 .GET()
@@ -63,6 +69,7 @@ public final class YoutubeHttpClient {
         String fullUrl = url + "?key=" + URLEncoder.encode(apiKey, StandardCharsets.UTF_8);
 
         HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(fullUrl))
+                .timeout(REQUEST_TIMEOUT)
                 .header("User-Agent", USER_AGENT)
                 .header("Accept-Language", "en")
                 .header("Content-Type", "application/json");

@@ -2,7 +2,7 @@ package com.github.davidauk.model.content;
 
 public enum ContentType {
     VIDEOS("videos", "videoRenderer"),
-    SHORTS("shorts", "reelWatchEndpoint"),
+//    SHORTS("shorts", "shortsLockupViewModel"),
     STREAMS("streams", "videoRenderer");
 
     private final String pathSegment;

@@ -2,53 +2,53 @@ package com.github.davidauk.model.content;
 
 import com.github.davidauk.model.Thumbnail;
 
-import java.sql.Timestamp;
+import java.time.Instant;
 import java.util.List;
 
 public class Video extends Content {
 
     private final String description;
-    private final Timestamp publishedAt;
-    private final String duration;
-    private final boolean membersOnly;
-    private final boolean verified;
+    private final Instant publishedAt;
+    private final Integer durationSeconds;
+    private final VideoType videoType;
+    private final ContentAvailability contentAvailability;
 
     public Video(
             String id,
             String title,
             String description,
-            Timestamp publishedTime,
-            String duration,
+            Instant publishedAt,
+            Integer durationSeconds,
             List<Thumbnail> thumbnailOptions,
-            boolean membersOnly,
-            boolean verified
+            ContentAvailability contentAvailability,
+            VideoType videoType
     ) {
         super(id, title, thumbnailOptions);
         this.description = description;
-        this.publishedAt = publishedTime;
-        this.duration = duration;
-        this.membersOnly = membersOnly;
-        this.verified = verified;
+        this.publishedAt = publishedAt;
+        this.durationSeconds = durationSeconds;
+        this.videoType = videoType;
+        this.contentAvailability = contentAvailability;
+    }
+
+    public VideoType getVideoType() {
+        return videoType;
     }
 
     public String getDescription() {
         return description;
     }
 
-    public Timestamp getPublishedAt() {
+    public Instant getPublishedAt() {
         return publishedAt;
     }
 
-    public String getDuration() {
-        return duration;
+    public Integer getDurationSeconds() {
+        return durationSeconds;
     }
 
-    public boolean isMembersOnly() {
-        return membersOnly;
-    }
-
-    public boolean isVerified() {
-        return verified;
+    public ContentAvailability getContentAvailability() {
+        return contentAvailability;
     }
 
     @Override
@@ -56,8 +56,8 @@ public class Video extends Content {
         return super.toString() +
                 ", description='" + description + '\'' +
                 ", publishedAt=" + publishedAt +
-                ", duration='" + duration + '\'' +
-                ", membersOnly=" + membersOnly +
-                ", verified=" + verified;
+                ", durationSeconds='" + durationSeconds + '\'' +
+                ", videoType=" + videoType +
+                ", contentAvailability=" + contentAvailability;
     }
 }
