@@ -13,20 +13,19 @@ public final class ThumbnailParser {
     private ThumbnailParser() {
     }
 
+    /**
+     * Parses a list of thumbnails from a JSON node.
+     * @param thumbnailNode the JSON node containing the thumbnail data (in list form with width, height, and url fields)
+     * @return a list of Thumbnail objects
+     */
     public static List<Thumbnail> parse(JsonNode thumbnailNode) {
-        if (thumbnailNode == null || thumbnailNode.isMissingNode() || thumbnailNode.isNull()) {
-            return null;
-        }
-
-        JsonNode thumbnailsJson = thumbnailNode.get("thumbnails");
-
-        if (thumbnailsJson == null || !thumbnailsJson.isArray() || thumbnailsJson.isEmpty()) {
+        if (thumbnailNode == null || thumbnailNode.isMissingNode() || thumbnailNode.isNull() || !thumbnailNode.isArray() || thumbnailNode.isEmpty()) {
             return null;
         }
 
         List<Thumbnail> thumbnails = new ArrayList<>();
 
-        for (JsonNode thumbnailJson : thumbnailsJson) {
+        for (JsonNode thumbnailJson : thumbnailNode) {
             try {
                 thumbnails.add(new Thumbnail(
                         thumbnailJson.get("width").asInt(),

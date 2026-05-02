@@ -41,6 +41,10 @@ public record PlayabilityStatusNode(
             return ContentAvailability.DELETED;
         }
 
+        if (detailedReason.contains("join")) {
+            return ContentAvailability.MEMBERS_ONLY;
+        }
+
         return ContentAvailability.PRIVATE;
     }
 

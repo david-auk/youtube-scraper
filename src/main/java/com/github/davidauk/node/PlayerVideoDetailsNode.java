@@ -34,7 +34,7 @@ public record PlayerVideoDetailsNode(JsonNode value) {
     }
 
     public List<Thumbnail> thumbnails() {
-        return ThumbnailParser.parse(value.path("thumbnail"));
+        return ThumbnailParser.parse(value.path("thumbnail").path("thumbnails"));
     }
 
     public boolean liveContent() {

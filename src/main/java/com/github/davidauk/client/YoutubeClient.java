@@ -3,12 +3,13 @@ package com.github.davidauk.client;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.github.davidauk.mapper.PartialVideoMapper;
-import com.github.davidauk.mapper.VideoMapper;
 import com.github.davidauk.model.*;
 import com.github.davidauk.model.content.PartialVideo;
 import com.github.davidauk.model.content.Video;
 import com.github.davidauk.node.*;
+import com.github.davidauk.selector.PartialVideoSelectorItemNode;
+import com.github.davidauk.selector.SelectorItemNodeFactory;
+import com.github.davidauk.selector.WatchPageSelectorItemNode;
 import com.github.davidauk.util.HtmlJsonExtractor;
 import com.github.davidauk.util.JsonNavigator;
 
@@ -41,23 +42,26 @@ public final class YoutubeClient {
      * @return a ChannelOverviewResponse containing the channel and its videos
      */
     public ChannelOverviewResponse getChannel(Channel channel, ChannelRequest request) throws IOException, InterruptedException {
-        List<JsonNode> channelResponse = getChannelRaw(channel, request);
+        List<PartialVideoSelectorItemNode> channelResponse = getChannelItems(channel, request);
 
         List<PartialVideo> videos = channelResponse.stream()
-                .map(PartialVideoRendererNode::new)
-                .map(videoNode -> PartialVideoMapper.toPartialVideo(videoNode, request.contentType()))
+                .map(videoNode -> videoNode.toPartialVideo(request.contentType()))
                 .filter(Objects::nonNull)
                 .toList();
 
         boolean isVerified = false;
 
         if (!videos.isEmpty()) {
-            JsonNode channelNode = channelResponse.getFirst();
-            isVerified = new YoutubeBadgeNode(channelNode.get("ownerBadges")).hasLabel("Verified");; // TODO Implement
+            JsonNode channelNode = channelResponse.getFirst().raw();
+            isVerified = new YoutubeBadgeNode(channelNode.get("ownerBadges")).hasLabel("Verified");
         }
 
-
-        return new ChannelOverviewResponse(channel, isVerified, videos);
+        return new ChannelOverviewResponse(
+                channel,
+                isVerified,
+                videos,
+                channelResponse.stream().map(PartialVideoSelectorItemNode::raw).toList()
+        );
     }
 
     /**
@@ -72,20 +76,37 @@ public final class YoutubeClient {
         return getChannel(ChannelFactory.buildChannel(channelDifferentiator, this), request);
     }
 
+//    /**
+//     * Fetches playlist items and converts the raw YouTube renderer nodes into
+//     * simplified {@link PartialVideo} models.
+//     *
+//     * @param request controls playlist id, limit, delay, and proxy usage
+//     * @return a list of simplified videos extracted from the playlist page
+//     */
+//    public List<PartialVideo> getPlaylistVideos(PlaylistRequest request) throws IOException, InterruptedException {
+//        return getPlaylistItems(request).stream()
+//                .map(videoNode -> videoNode.toPartialVideo(null))
+//                .filter(Objects::nonNull)
+//                .toList();
+//    }
     /**
-     * Fetches playlist items and converts the raw YouTube renderer nodes into
-     * simplified {@link PartialVideo} models.
+     * Fetches typed partial-video selector item nodes for a channel page.
      *
-     * @param request controls playlist id, limit, delay, and proxy usage
-     * @return a list of simplified videos extracted from the playlist page
+     * <p>The concrete implementation is chosen from the selector item that matched
+     * the YouTube response, for example videoRenderer or lockupViewModel.
      */
-    public List<PartialVideo> getPlaylistVideos(PlaylistRequest request) throws IOException, InterruptedException {
-        return getPlaylistRaw(request).stream()
-                .map(PartialVideoRendererNode::new)
-                // TODO Add content type to PartialVideo
-                .map(videoNode -> PartialVideoMapper.toPartialVideo(videoNode, null))
-                .filter(Objects::nonNull)
-                .toList();
+    public List<PartialVideoSelectorItemNode> getChannelItems(Channel channel, ChannelRequest request) throws IOException, InterruptedException {
+        String url = channel.baseUrl() + "/" + request.contentType().pathSegment() + "?view=0&flow=grid";
+
+        return getSelectorItems(
+                url,
+                "contents",
+                request.contentType().selectorItems(),
+                request.limit(),
+                request.sleep(),
+                request.proxySelector(),
+                request.sortBy()
+        );
     }
 
     /**
@@ -142,18 +163,26 @@ public final class YoutubeClient {
      * @return raw renderer nodes that match the requested channel content type
      */
     public List<JsonNode> getChannelRaw(Channel channel, ChannelRequest request) throws IOException, InterruptedException {
-        String url = channel.baseUrl() + "/" + request.contentType().pathSegment() + "?view=0&flow=grid";
-
-        return getVideos(
-                url,
-                "contents",
-                request.contentType().selectorItem(),
-                request.limit(),
-                request.sleep(),
-                request.proxySelector(),
-                request.sortBy()
-        );
+        return getChannelItems(channel, request).stream()
+                .map(PartialVideoSelectorItemNode::raw)
+                .toList();
     }
+//    /**
+//     * Fetches typed selector item nodes for a playlist page.
+//     */
+//    public List<SelectorItemNode> getPlaylistItems(PlaylistRequest request) throws IOException, InterruptedException {
+//        String url = "https://www.youtube.com/playlist?list=" + request.playlistId();
+//
+//        return getSelectorItems(
+//                url,
+//                "playlistVideoListRenderer",
+//                List.of("playlistVideoRenderer"),
+//                request.limit(),
+//                request.sleep(),
+//                request.proxySelector(),
+//                null
+//        );
+//    }
 
     /**
      * Resolves a channel from a user-facing differentiator and fetches the raw
@@ -167,34 +196,33 @@ public final class YoutubeClient {
         return getChannelRaw(ChannelFactory.buildChannel(channelDifferentiator, this), request);
     }
 
-    /**
-     * Fetches raw playlist renderer nodes without converting them into domain models.
-     *
-     * @param request controls playlist id, limit, delay, and proxy usage
-     * @return raw renderer nodes extracted from the playlist page
-     */
-    public List<JsonNode> getPlaylistRaw(PlaylistRequest request) throws IOException, InterruptedException {
-        String url = "https://www.youtube.com/playlist?list=" + request.playlistId();
-
-        return getVideos(
-                url,
-                "playlistVideoListRenderer",
-                "playlistVideoRenderer",
-                request.limit(),
-                request.sleep(),
-                request.proxySelector(),
-                null
-        );
-    }
+//    /**
+//     * Fetches raw playlist renderer nodes without converting them into domain models.
+//     *
+//     * @param request controls playlist id, limit, delay, and proxy usage
+//     * @return raw renderer nodes extracted from the playlist page
+//     */
+//    public List<JsonNode> getPlaylistRaw(PlaylistRequest request) throws IOException, InterruptedException {
+//        return getPlaylistItems(request).stream()
+//                .map(SelectorItemNode::raw)
+//                .toList();
+//    }
 
     /**
-     * Fetches the primary information block for a single video page and converts it to a Video.
+     * Fetches a single video page and delegates conversion to the selector item node.
      *
      * @param videoId the YouTube video id
      * @return the Video object for the video page
      */
     public Video getVideo(String videoId) throws IOException, InterruptedException {
-        return VideoMapper.toVideo(getWatchPage(videoId));
+        return getWatchPageItem(videoId).toVideo();
+    }
+
+    /**
+     * Fetches a typed selector item node for a single video page.
+     */
+    public WatchPageSelectorItemNode getWatchPageItem(String videoId) throws IOException, InterruptedException {
+        return new WatchPageSelectorItemNode(getWatchPage(videoId));
     }
 
     public WatchPageNode getWatchPage(String videoId) throws IOException, InterruptedException {
@@ -213,35 +241,35 @@ public final class YoutubeClient {
         return new WatchPageNode(videoId, initialData, playerResponse);
     }
 
-    /**
-     * Fetches the primary information block for a single video page without converting it.
-     *
-     * @param videoId the YouTube video id
-     * @return the raw {@code videoPrimaryInfoRenderer} node for the video page
-     */
-    public JsonNode getVideoRaw(String videoId) throws IOException, InterruptedException {
-        YoutubeHttpClient session = new YoutubeHttpClient(null);
-
-        String url = "https://www.youtube.com/watch?v=" + videoId;
-        String html = session.get(url);
-
-        JsonNode client = objectMapper.readTree(
-                HtmlJsonExtractor.extract(html, "INNERTUBE_CONTEXT", 2, "\"}},") + "\"}}"
-        ).get("client");
-
-        session.setYoutubeClientVersion(client.get("clientVersion").asText());
-
-        JsonNode data = objectMapper.readTree(
-                HtmlJsonExtractor.extract(html, "var ytInitialData = ", 0, "};") + "}"
-        );
-
-        JsonNode result = JsonNavigator.findFirst(data, "videoPrimaryInfoRenderer");
-        if (result == null) {
-            throw new IllegalStateException("Could not find videoPrimaryInfoRenderer for video: " + videoId);
-        }
-
-        return result;
-    }
+//    /**
+//     * Fetches the primary information block for a single video page without converting it.
+//     *
+//     * @param videoId the YouTube video id
+//     * @return the raw {@code videoPrimaryInfoRenderer} node for the video page
+//     */
+//    public JsonNode getVideoRaw(String videoId) throws IOException, InterruptedException {
+//        YoutubeHttpClient session = new YoutubeHttpClient(null);
+//
+//        String url = "https://www.youtube.com/watch?v=" + videoId;
+//        String html = session.get(url);
+//
+//        JsonNode client = objectMapper.readTree(
+//                HtmlJsonExtractor.extract(html, "INNERTUBE_CONTEXT", 2, "\"}},") + "\"}}"
+//        ).get("client");
+//
+//        session.setYoutubeClientVersion(client.get("clientVersion").asText());
+//
+//        JsonNode data = objectMapper.readTree(
+//                HtmlJsonExtractor.extract(html, "var ytInitialData = ", 0, "};") + "}"
+//        );
+//
+//        JsonNode result = JsonNavigator.findFirst(data, "videoPrimaryInfoRenderer");
+//        if (result == null) {
+//            throw new IllegalStateException("Could not find videoPrimaryInfoRenderer for video: " + videoId);
+//        }
+//
+//        return result;
+//    }
 
     public Video getVideo(PartialVideo video) throws IOException, InterruptedException {
         return getVideo(video.id());
@@ -259,10 +287,10 @@ public final class YoutubeClient {
      * the continuation token behind the selected sort option. The actual content is
      * then fetched through the ajax continuation flow.
      */
-    private List<JsonNode> getVideos(
+    private List<PartialVideoSelectorItemNode> getSelectorItems(
             String url,
             String selectorList,
-            String selectorItem,
+            List<String> selectorItems,
             Integer limit,
             Duration sleep,
             ProxySelector proxySelector,
@@ -270,7 +298,7 @@ public final class YoutubeClient {
     ) throws IOException, InterruptedException {
 
         YoutubeHttpClient session = new YoutubeHttpClient(proxySelector);
-        List<JsonNode> results = new ArrayList<>();
+        List<PartialVideoSelectorItemNode> results = new ArrayList<>();
 
         boolean isFirst = true;
         JsonNode client = null;
@@ -287,6 +315,7 @@ public final class YoutubeClient {
                 isFirst = false;
 
                 String html = session.get(url);
+                validateYoutubeHtmlResponse(html, url);
 
                 client = objectMapper.readTree(
                         HtmlJsonExtractor.extract(html, "INNERTUBE_CONTEXT", 2, "\"}},") + "\"}}"
@@ -303,6 +332,8 @@ public final class YoutubeClient {
                 if (data == null) {
                     throw new IllegalStateException("Could not find selector list: " + selectorList);
                 }
+
+                validateInitialContentTree(data, selectorList, selectorItems, url);
 
                 // Non-default sort actions are defined at page level, while regular
                 // pagination continuation usually lives inside the narrowed content tree.
@@ -325,13 +356,15 @@ public final class YoutubeClient {
                 // Follow-up iterations use continuation-based ajax responses instead of
                 // re-downloading the entire page HTML.
                 data = getAjaxData(session, apiKey, nextData, client);
+                validateAjaxContentTree(data, selectorItems, url);
                 nextData = getNextData(data, null);
             }
 
             // Extract all matching renderer items from the current response chunk.
-            // TODO If selectorItem is null find all (Stream & Video)
-            List<JsonNode> items = JsonNavigator.findAll(data, selectorItem);
-            for (JsonNode item : items) {
+            // The selector list is ordered by preference. For example, streams may
+            // primarily use videoRenderer, but sometimes YouTube returns lockupViewModel.
+            List<PartialVideoSelectorItemNode> items = findFirstMatchingSelectorItems(data, selectorItems);
+            for (PartialVideoSelectorItemNode item : items) {
                 results.add(item);
                 if (limit != null && results.size() >= limit) {
                     return results;
@@ -354,7 +387,131 @@ public final class YoutubeClient {
             Thread.sleep(sleep.toMillis());
         }
 
+        if (results.isEmpty()) {
+            throw new IllegalStateException(
+                    "YouTube response was parsed successfully, but no items matching selectors " + selectorItems + " were found for: " + url
+            );
+        }
+
         return results;
+    }
+
+    /**
+     * Returns typed selector items for the first non-empty selector result.
+     */
+    private List<PartialVideoSelectorItemNode> findFirstMatchingSelectorItems(JsonNode data, List<String> selectorItems) {
+        SelectorItemMatch match = findFirstMatchingItems(data, selectorItems);
+        if (match.items().isEmpty()) {
+            return List.of();
+        }
+
+        return match.items().stream()
+                .map(item -> (PartialVideoSelectorItemNode) SelectorItemNodeFactory.from(match.selectorItem(), item))
+                .toList();
+    }
+
+    /**
+     * Returns the first non-empty result for the ordered selector list.
+     *
+     * <p>The order matters: callers can pass their preferred stable renderer first
+     * and newer/less-specific renderer shapes as fallback selectors.
+     */
+    private SelectorItemMatch findFirstMatchingItems(JsonNode data, List<String> selectorItems) {
+        if (selectorItems == null || selectorItems.isEmpty()) {
+            return SelectorItemMatch.empty();
+        }
+
+        for (String selectorItem : selectorItems) {
+            if (selectorItem == null || selectorItem.isBlank()) {
+                continue;
+            }
+
+            List<JsonNode> items = JsonNavigator.findAll(data, selectorItem);
+            if (!items.isEmpty()) {
+                return new SelectorItemMatch(selectorItem, items);
+            }
+        }
+
+        return SelectorItemMatch.empty();
+    }
+
+    /**
+     * Detects common non-content YouTube pages before JSON extraction turns them
+     * into confusing empty results.
+     */
+    private void validateYoutubeHtmlResponse(String html, String url) {
+        if (html == null || html.isBlank()) {
+            throw new IllegalStateException("YouTube returned an empty HTML response for: " + url);
+        }
+
+        String lowerHtml = html.toLowerCase();
+        if (lowerHtml.contains("consent.youtube.com") || lowerHtml.contains("before you continue to youtube")) {
+            throw new IllegalStateException("YouTube returned a consent page instead of channel content for: " + url);
+        }
+
+        if (lowerHtml.contains("our systems have detected unusual traffic")
+                || lowerHtml.contains("detected unusual traffic from your computer network")
+                || lowerHtml.contains("/sorry/index")) {
+            throw new IllegalStateException("YouTube returned an anti-bot / unusual traffic page instead of channel content for: " + url);
+        }
+
+        if (!html.contains("ytInitialData")) {
+            throw new IllegalStateException("YouTube response did not contain ytInitialData for: " + url);
+        }
+
+        if (!html.contains("INNERTUBE_CONTEXT")) {
+            throw new IllegalStateException("YouTube response did not contain INNERTUBE_CONTEXT for: " + url);
+        }
+    }
+
+    /**
+     * Detects an initial page that has the expected content list, but not any of
+     * the renderer types this client was asked to extract.
+     */
+    private void validateInitialContentTree(JsonNode data, String selectorList, List<String> selectorItems, String url) {
+        if (selectorItems == null || selectorItems.isEmpty()) {
+            return;
+        }
+
+        if (!findFirstMatchingItems(data, selectorItems).items().isEmpty()) {
+            return;
+        }
+
+        if (JsonNavigator.findFirst(data, "messageRenderer") != null
+                || JsonNavigator.findFirst(data, "itemSectionRenderer") != null
+                || JsonNavigator.findFirst(data, "backgroundPromoRenderer") != null) {
+            throw new IllegalStateException(
+                    "YouTube returned a non-video content tree for selector list '" + selectorList + "'. "
+                            + "Expected one of item selectors " + selectorItems + " for: " + url
+            );
+        }
+    }
+
+    /**
+     * Detects ajax continuation responses that are valid JSON but contain no
+     * useful renderer items for this request.
+     */
+    private void validateAjaxContentTree(JsonNode data, List<String> selectorItems, String url) {
+        if (data == null || data.isNull() || data.isMissingNode()) {
+            throw new IllegalStateException("YouTube returned an empty ajax continuation response for: " + url);
+        }
+
+        JsonNode error = data.get("error");
+        if (error != null && !error.isNull()) {
+            throw new IllegalStateException("YouTube ajax continuation returned an error: " + error);
+        }
+
+        if (selectorItems == null || selectorItems.isEmpty()) {
+            return;
+        }
+
+        boolean hasContinuation = JsonNavigator.findFirst(data, "continuationEndpoint") != null;
+        boolean hasItems = !findFirstMatchingItems(data, selectorItems).items().isEmpty();
+        if (!hasItems && !hasContinuation) {
+            throw new IllegalStateException(
+                    "YouTube ajax continuation contained none of selectors " + selectorItems + " and no further continuation for: " + url
+            );
+        }
     }
 
     /**
@@ -594,5 +751,11 @@ public final class YoutubeClient {
         }
 
         throw new IllegalStateException("Could not resolve continuation data for sort option with label: " + expectedLabel);
+    }
+
+    private record SelectorItemMatch(String selectorItem, List<JsonNode> items) {
+        private static SelectorItemMatch empty() {
+            return new SelectorItemMatch(null, List.of());
+        }
     }
 }

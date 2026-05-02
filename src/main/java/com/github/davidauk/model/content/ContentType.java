@@ -1,23 +1,25 @@
 package com.github.davidauk.model.content;
 
+import java.util.List;
+
 public enum ContentType {
-    VIDEOS("videos", "videoRenderer"),
-//    SHORTS("shorts", "shortsLockupViewModel"),
-    STREAMS("streams", "videoRenderer");
+    VIDEOS("videos", List.of("videoRenderer", "lockupViewModel")),
+//    SHORTS("shorts", "shortsLockupViewModel", null),
+    STREAMS("streams", List.of("videoRenderer", "lockupViewModel"));
 
     private final String pathSegment;
-    private final String selectorItem;
+    private final List<String> selectorItems;
 
-    ContentType(String pathSegment, String selectorItem) {
+    ContentType(String pathSegment, List<String> selectorItems) {
         this.pathSegment = pathSegment;
-        this.selectorItem = selectorItem;
+        this.selectorItems = selectorItems;
     }
 
     public String pathSegment() {
         return pathSegment;
     }
 
-    public String selectorItem() {
-        return selectorItem;
+    public List<String> selectorItems() {
+        return selectorItems;
     }
 }

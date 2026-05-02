@@ -9,7 +9,6 @@ import java.util.List;
 public record PartialVideo(
         String id,
         String title,
-        String descriptionSnippet,
         Integer durationSeconds,
         List<Thumbnail> thumbnailOptions,
         ContentAvailability contentAvailability,
@@ -18,7 +17,7 @@ public record PartialVideo(
 //        boolean verified
         // Add any other attributes available in the overview batch
 ) {
-    Video getVideo(YoutubeClient youtubeClient) throws IOException, InterruptedException {
+    public Video getVideo(YoutubeClient youtubeClient) throws IOException, InterruptedException {
         return youtubeClient.getVideo(this);
     }
 }
