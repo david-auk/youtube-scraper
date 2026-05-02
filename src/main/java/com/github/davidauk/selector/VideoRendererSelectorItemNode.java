@@ -14,8 +14,6 @@ public record VideoRendererSelectorItemNode(JsonNode raw) implements PartialVide
     @Override
     public PartialVideo toPartialVideo(ContentType contentType) {
 
-        System.out.println("VideoRendererSelectorItemNode.toPartialVideo");
-
         if (!hasEnoughData()) {
             return null;
         }
