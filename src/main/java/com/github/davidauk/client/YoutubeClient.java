@@ -4,6 +4,12 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.github.davidauk.model.*;
+import com.github.davidauk.model.content.PartialVideo;
+import com.github.davidauk.model.content.Video;
+import com.github.davidauk.node.*;
+import com.github.davidauk.selector.PartialVideoSelectorItemNode;
+import com.github.davidauk.selector.SelectorItemNodeFactory;
+import com.github.davidauk.selector.WatchPageSelectorItemNode;
 import com.github.davidauk.util.HtmlJsonExtractor;
 import com.github.davidauk.util.JsonNavigator;
 
@@ -16,7 +22,7 @@ import java.util.Objects;
 
 public final class YoutubeClient {
     private static final String BROWSE_API_ENDPOINT = "https://www.youtube.com/youtubei/v1/browse";
-
+    private static final int MAX_EMPTY_CONTINUATION_PAGES = 2;
     private final ObjectMapper objectMapper;
 
     /**
@@ -29,17 +35,33 @@ public final class YoutubeClient {
 
     /**
      * Fetches channel content according to the supplied request and converts the
-     * raw YouTube renderer nodes into simplified {@link Video} models.
+     * raw YouTube renderer nodes into overview-level {@link PartialVideo} models.
      *
      * @param channel the already resolved channel reference
      * @param request controls content type, sort order, limit, delay, and proxy usage
-     * @return a list of simplified videos extracted from the channel page
+     * @return a ChannelOverviewResponse containing the channel and its videos
      */
-    public List<Video> getChannel(Channel channel, ChannelRequest request) throws IOException, InterruptedException {
-        return getChannelRaw(channel, request).stream()
-                .map(this::toVideo)
+    public ChannelOverviewResponse getChannel(Channel channel, ChannelRequest request) throws IOException, InterruptedException {
+        List<PartialVideoSelectorItemNode> channelResponse = getChannelItems(channel, request);
+
+        List<PartialVideo> videos = channelResponse.stream()
+                .map(videoNode -> videoNode.toPartialVideo(request.contentType()))
                 .filter(Objects::nonNull)
                 .toList();
+
+        boolean isVerified = false;
+
+        if (!videos.isEmpty()) {
+            JsonNode channelNode = channelResponse.getFirst().raw();
+            isVerified = new YoutubeBadgeNode(channelNode.get("ownerBadges")).hasLabel("Verified");
+        }
+
+        return new ChannelOverviewResponse(
+                channel,
+                isVerified,
+                videos,
+                channelResponse.stream().map(PartialVideoSelectorItemNode::raw).toList()
+        );
     }
 
     /**
@@ -48,24 +70,43 @@ public final class YoutubeClient {
      *
      * @param channelDifferentiator a value that can be resolved into a {@link Channel}
      * @param request controls content type, sort order, limit, delay, and proxy usage
-     * @return a list of simplified videos extracted from the channel page
+     * @return a ChannelOverviewResponse containing the channel and its videos
      */
-    public List<Video> getChannel(String channelDifferentiator, ChannelRequest request) throws IOException, InterruptedException {
-        return getChannel(ChannelFactory.buildChannelRequest(channelDifferentiator, this), request);
+    public ChannelOverviewResponse getChannel(String channelDifferentiator, ChannelRequest request) throws IOException, InterruptedException {
+        return getChannel(ChannelFactory.buildChannel(channelDifferentiator, this), request);
     }
 
+//    /**
+//     * Fetches playlist items and converts the raw YouTube renderer nodes into
+//     * simplified {@link PartialVideo} models.
+//     *
+//     * @param request controls playlist id, limit, delay, and proxy usage
+//     * @return a list of simplified videos extracted from the playlist page
+//     */
+//    public List<PartialVideo> getPlaylistVideos(PlaylistRequest request) throws IOException, InterruptedException {
+//        return getPlaylistItems(request).stream()
+//                .map(videoNode -> videoNode.toPartialVideo(null))
+//                .filter(Objects::nonNull)
+//                .toList();
+//    }
     /**
-     * Fetches playlist items and converts the raw YouTube renderer nodes into
-     * simplified {@link Video} models.
+     * Fetches typed partial-video selector item nodes for a channel page.
      *
-     * @param request controls playlist id, limit, delay, and proxy usage
-     * @return a list of simplified videos extracted from the playlist page
+     * <p>The concrete implementation is chosen from the selector item that matched
+     * the YouTube response, for example videoRenderer or lockupViewModel.
      */
-    public List<Video> getPlaylistVideos(PlaylistRequest request) throws IOException, InterruptedException {
-        return getPlaylistRaw(request).stream()
-                .map(this::toVideo)
-                .filter(Objects::nonNull)
-                .toList();
+    public List<PartialVideoSelectorItemNode> getChannelItems(Channel channel, ChannelRequest request) throws IOException, InterruptedException {
+        String url = channel.baseUrl() + "/" + request.contentType().pathSegment() + "?view=0&flow=grid";
+
+        return getSelectorItems(
+                url,
+                "contents",
+                request.contentType().selectorItems(),
+                request.limit(),
+                request.sleep(),
+                request.proxySelector(),
+                request.sortBy()
+        );
     }
 
     /**
@@ -122,18 +163,26 @@ public final class YoutubeClient {
      * @return raw renderer nodes that match the requested channel content type
      */
     public List<JsonNode> getChannelRaw(Channel channel, ChannelRequest request) throws IOException, InterruptedException {
-        String url = channel.baseUrl() + "/" + request.contentType().pathSegment() + "?view=0&flow=grid";
-
-        return getVideos(
-                url,
-                "contents",
-                request.contentType().selectorItem(),
-                request.limit(),
-                request.sleep(),
-                request.proxySelector(),
-                request.sortBy()
-        );
+        return getChannelItems(channel, request).stream()
+                .map(PartialVideoSelectorItemNode::raw)
+                .toList();
     }
+//    /**
+//     * Fetches typed selector item nodes for a playlist page.
+//     */
+//    public List<SelectorItemNode> getPlaylistItems(PlaylistRequest request) throws IOException, InterruptedException {
+//        String url = "https://www.youtube.com/playlist?list=" + request.playlistId();
+//
+//        return getSelectorItems(
+//                url,
+//                "playlistVideoListRenderer",
+//                List.of("playlistVideoRenderer"),
+//                request.limit(),
+//                request.sleep(),
+//                request.proxySelector(),
+//                null
+//        );
+//    }
 
     /**
      * Resolves a channel from a user-facing differentiator and fetches the raw
@@ -144,57 +193,86 @@ public final class YoutubeClient {
      * @return raw renderer nodes that match the requested channel content type
      */
     public List<JsonNode> getChannelRaw(String channelDifferentiator, ChannelRequest request) throws IOException, InterruptedException {
-        return getChannelRaw(ChannelFactory.buildChannelRequest(channelDifferentiator, this), request);
+        return getChannelRaw(ChannelFactory.buildChannel(channelDifferentiator, this), request);
     }
 
-    /**
-     * Fetches raw playlist renderer nodes without converting them into domain models.
-     *
-     * @param request controls playlist id, limit, delay, and proxy usage
-     * @return raw renderer nodes extracted from the playlist page
-     */
-    public List<JsonNode> getPlaylistRaw(PlaylistRequest request) throws IOException, InterruptedException {
-        String url = "https://www.youtube.com/playlist?list=" + request.playlistId();
-
-        return getVideos(
-                url,
-                "playlistVideoListRenderer",
-                "playlistVideoRenderer",
-                request.limit(),
-                request.sleep(),
-                request.proxySelector(),
-                null
-        );
-    }
+//    /**
+//     * Fetches raw playlist renderer nodes without converting them into domain models.
+//     *
+//     * @param request controls playlist id, limit, delay, and proxy usage
+//     * @return raw renderer nodes extracted from the playlist page
+//     */
+//    public List<JsonNode> getPlaylistRaw(PlaylistRequest request) throws IOException, InterruptedException {
+//        return getPlaylistItems(request).stream()
+//                .map(SelectorItemNode::raw)
+//                .toList();
+//    }
 
     /**
-     * Fetches the primary information block for a single video page.
+     * Fetches a single video page and delegates conversion to the selector item node.
      *
      * @param videoId the YouTube video id
-     * @return the raw {@code videoPrimaryInfoRenderer} node for the video page
+     * @return the Video object for the video page
      */
-    public JsonNode getVideo(String videoId) throws IOException, InterruptedException {
+    public Video getVideo(String videoId) throws IOException, InterruptedException {
+        return getWatchPageItem(videoId).toVideo();
+    }
+
+    /**
+     * Fetches a typed selector item node for a single video page.
+     */
+    public WatchPageSelectorItemNode getWatchPageItem(String videoId) throws IOException, InterruptedException {
+        return new WatchPageSelectorItemNode(getWatchPage(videoId));
+    }
+
+    public WatchPageNode getWatchPage(String videoId) throws IOException, InterruptedException {
         YoutubeHttpClient session = new YoutubeHttpClient(null);
 
-        String url = "https://www.youtube.com/watch?v=" + videoId;
-        String html = session.get(url);
+        String html = session.get("https://www.youtube.com/watch?v=" + videoId);
 
-        JsonNode client = objectMapper.readTree(
-                HtmlJsonExtractor.extract(html, "INNERTUBE_CONTEXT", 2, "\"}},") + "\"}}"
-        ).get("client");
-
-        session.setYoutubeClientVersion(client.get("clientVersion").asText());
-
-        JsonNode data = objectMapper.readTree(
+        JsonNode initialData = objectMapper.readTree(
                 HtmlJsonExtractor.extract(html, "var ytInitialData = ", 0, "};") + "}"
         );
 
-        JsonNode result = JsonNavigator.findFirst(data, "videoPrimaryInfoRenderer");
-        if (result == null) {
-            throw new IllegalStateException("Could not find videoPrimaryInfoRenderer for video: " + videoId);
-        }
+        JsonNode playerResponse = objectMapper.readTree(
+                HtmlJsonExtractor.extract(html, "var ytInitialPlayerResponse = ", 0, "};") + "}"
+        );
 
-        return result;
+        return new WatchPageNode(videoId, initialData, playerResponse);
+    }
+
+//    /**
+//     * Fetches the primary information block for a single video page without converting it.
+//     *
+//     * @param videoId the YouTube video id
+//     * @return the raw {@code videoPrimaryInfoRenderer} node for the video page
+//     */
+//    public JsonNode getVideoRaw(String videoId) throws IOException, InterruptedException {
+//        YoutubeHttpClient session = new YoutubeHttpClient(null);
+//
+//        String url = "https://www.youtube.com/watch?v=" + videoId;
+//        String html = session.get(url);
+//
+//        JsonNode client = objectMapper.readTree(
+//                HtmlJsonExtractor.extract(html, "INNERTUBE_CONTEXT", 2, "\"}},") + "\"}}"
+//        ).get("client");
+//
+//        session.setYoutubeClientVersion(client.get("clientVersion").asText());
+//
+//        JsonNode data = objectMapper.readTree(
+//                HtmlJsonExtractor.extract(html, "var ytInitialData = ", 0, "};") + "}"
+//        );
+//
+//        JsonNode result = JsonNavigator.findFirst(data, "videoPrimaryInfoRenderer");
+//        if (result == null) {
+//            throw new IllegalStateException("Could not find videoPrimaryInfoRenderer for video: " + videoId);
+//        }
+//
+//        return result;
+//    }
+
+    public Video getVideo(PartialVideo video) throws IOException, InterruptedException {
+        return getVideo(video.id());
     }
 
     /**
@@ -209,10 +287,10 @@ public final class YoutubeClient {
      * the continuation token behind the selected sort option. The actual content is
      * then fetched through the ajax continuation flow.
      */
-    private List<JsonNode> getVideos(
+    private List<PartialVideoSelectorItemNode> getSelectorItems(
             String url,
             String selectorList,
-            String selectorItem,
+            List<String> selectorItems,
             Integer limit,
             Duration sleep,
             ProxySelector proxySelector,
@@ -220,12 +298,13 @@ public final class YoutubeClient {
     ) throws IOException, InterruptedException {
 
         YoutubeHttpClient session = new YoutubeHttpClient(proxySelector);
-        List<JsonNode> results = new ArrayList<>();
+        List<PartialVideoSelectorItemNode> results = new ArrayList<>();
 
         boolean isFirst = true;
         JsonNode client = null;
         String apiKey = null;
         ContinuationData nextData = null;
+        int emptyContinuationPages = 0;
 
         while (true) {
             JsonNode data;
@@ -233,7 +312,10 @@ public final class YoutubeClient {
             // The first iteration parses the full HTML page to bootstrap client metadata,
             // the initial content tree, and the first continuation token.
             if (isFirst) {
+                isFirst = false;
+
                 String html = session.get(url);
+                validateYoutubeHtmlResponse(html, url);
 
                 client = objectMapper.readTree(
                         HtmlJsonExtractor.extract(html, "INNERTUBE_CONTEXT", 2, "\"}},") + "\"}}"
@@ -251,6 +333,8 @@ public final class YoutubeClient {
                     throw new IllegalStateException("Could not find selector list: " + selectorList);
                 }
 
+                validateInitialContentTree(data, selectorList, selectorItems, url);
+
                 // Non-default sort actions are defined at page level, while regular
                 // pagination continuation usually lives inside the narrowed content tree.
                 JsonNode nextDataSource = (sortBy != null && sortBy != ChannelSort.NEWEST)
@@ -258,8 +342,6 @@ public final class YoutubeClient {
                         : data;
 
                 nextData = getNextData(nextDataSource, sortBy);
-
-                isFirst = false;
 
                 // For alternative sorting, the first page only discovers the ajax
                 // continuation behind the selected sort option. The next loop iteration
@@ -274,12 +356,15 @@ public final class YoutubeClient {
                 // Follow-up iterations use continuation-based ajax responses instead of
                 // re-downloading the entire page HTML.
                 data = getAjaxData(session, apiKey, nextData, client);
+                validateAjaxContentTree(data, selectorItems, url);
                 nextData = getNextData(data, null);
             }
 
             // Extract all matching renderer items from the current response chunk.
-            List<JsonNode> items = JsonNavigator.findAll(data, selectorItem);
-            for (JsonNode item : items) {
+            // The selector list is ordered by preference. For example, streams may
+            // primarily use videoRenderer, but sometimes YouTube returns lockupViewModel.
+            List<PartialVideoSelectorItemNode> items = findFirstMatchingSelectorItems(data, selectorItems);
+            for (PartialVideoSelectorItemNode item : items) {
                 results.add(item);
                 if (limit != null && results.size() >= limit) {
                     return results;
@@ -290,10 +375,143 @@ public final class YoutubeClient {
                 break;
             }
 
+            if (items.isEmpty()) {
+                emptyContinuationPages++;
+                if (emptyContinuationPages >= MAX_EMPTY_CONTINUATION_PAGES) {
+                    break;
+                }
+            } else {
+                emptyContinuationPages = 0;
+            }
+
             Thread.sleep(sleep.toMillis());
         }
 
+        if (results.isEmpty()) {
+            throw new IllegalStateException(
+                    "YouTube response was parsed successfully, but no items matching selectors " + selectorItems + " were found for: " + url
+            );
+        }
+
         return results;
+    }
+
+    /**
+     * Returns typed selector items for the first non-empty selector result.
+     */
+    private List<PartialVideoSelectorItemNode> findFirstMatchingSelectorItems(JsonNode data, List<String> selectorItems) {
+        SelectorItemMatch match = findFirstMatchingItems(data, selectorItems);
+        if (match.items().isEmpty()) {
+            return List.of();
+        }
+
+        return match.items().stream()
+                .map(item -> (PartialVideoSelectorItemNode) SelectorItemNodeFactory.from(match.selectorItem(), item))
+                .toList();
+    }
+
+    /**
+     * Returns the first non-empty result for the ordered selector list.
+     *
+     * <p>The order matters: callers can pass their preferred stable renderer first
+     * and newer/less-specific renderer shapes as fallback selectors.
+     */
+    private SelectorItemMatch findFirstMatchingItems(JsonNode data, List<String> selectorItems) {
+        if (selectorItems == null || selectorItems.isEmpty()) {
+            return SelectorItemMatch.empty();
+        }
+
+        for (String selectorItem : selectorItems) {
+            if (selectorItem == null || selectorItem.isBlank()) {
+                continue;
+            }
+
+            List<JsonNode> items = JsonNavigator.findAll(data, selectorItem);
+            if (!items.isEmpty()) {
+                return new SelectorItemMatch(selectorItem, items);
+            }
+        }
+
+        return SelectorItemMatch.empty();
+    }
+
+    /**
+     * Detects common non-content YouTube pages before JSON extraction turns them
+     * into confusing empty results.
+     */
+    private void validateYoutubeHtmlResponse(String html, String url) {
+        if (html == null || html.isBlank()) {
+            throw new IllegalStateException("YouTube returned an empty HTML response for: " + url);
+        }
+
+        String lowerHtml = html.toLowerCase();
+        if (lowerHtml.contains("consent.youtube.com") || lowerHtml.contains("before you continue to youtube")) {
+            throw new IllegalStateException("YouTube returned a consent page instead of channel content for: " + url);
+        }
+
+        if (lowerHtml.contains("our systems have detected unusual traffic")
+                || lowerHtml.contains("detected unusual traffic from your computer network")
+                || lowerHtml.contains("/sorry/index")) {
+            throw new IllegalStateException("YouTube returned an anti-bot / unusual traffic page instead of channel content for: " + url);
+        }
+
+        if (!html.contains("ytInitialData")) {
+            throw new IllegalStateException("YouTube response did not contain ytInitialData for: " + url);
+        }
+
+        if (!html.contains("INNERTUBE_CONTEXT")) {
+            throw new IllegalStateException("YouTube response did not contain INNERTUBE_CONTEXT for: " + url);
+        }
+    }
+
+    /**
+     * Detects an initial page that has the expected content list, but not any of
+     * the renderer types this client was asked to extract.
+     */
+    private void validateInitialContentTree(JsonNode data, String selectorList, List<String> selectorItems, String url) {
+        if (selectorItems == null || selectorItems.isEmpty()) {
+            return;
+        }
+
+        if (!findFirstMatchingItems(data, selectorItems).items().isEmpty()) {
+            return;
+        }
+
+        if (JsonNavigator.findFirst(data, "messageRenderer") != null
+                || JsonNavigator.findFirst(data, "itemSectionRenderer") != null
+                || JsonNavigator.findFirst(data, "backgroundPromoRenderer") != null) {
+            throw new IllegalStateException(
+                    "YouTube returned a non-video content tree for selector list '" + selectorList + "'. "
+                            + "Expected one of item selectors " + selectorItems + " for: " + url
+            );
+        }
+    }
+
+    /**
+     * Detects ajax continuation responses that are valid JSON but contain no
+     * useful renderer items for this request.
+     */
+    private void validateAjaxContentTree(JsonNode data, List<String> selectorItems, String url) {
+        if (data == null || data.isNull() || data.isMissingNode()) {
+            throw new IllegalStateException("YouTube returned an empty ajax continuation response for: " + url);
+        }
+
+        JsonNode error = data.get("error");
+        if (error != null && !error.isNull()) {
+            throw new IllegalStateException("YouTube ajax continuation returned an error: " + error);
+        }
+
+        if (selectorItems == null || selectorItems.isEmpty()) {
+            return;
+        }
+
+        boolean hasContinuation = JsonNavigator.findFirst(data, "continuationEndpoint") != null;
+        boolean hasItems = !findFirstMatchingItems(data, selectorItems).items().isEmpty();
+        if (!hasItems && !hasContinuation) {
+            throw new IllegalStateException(
+                    "YouTube ajax continuation contained none of selectors " + selectorItems + " and no further continuation for: " + url
+            );
+        }
     }
 
     /**
@@ -323,40 +541,8 @@ public final class YoutubeClient {
         return objectMapper.readTree(responseBody);
     }
 
-    /**
-     * Converts a raw YouTube renderer node into the library's simplified
-     * {@link Video} representation.
-     */
-    private Video toVideo(JsonNode node) {
-        if (node == null || node.isMissingNode()) {
-            return null;
-        }
 
-        // Pull a compact subset of fields that are stable enough for the public model.
-        String id = textAt(node, "videoId");
-        String title = extractText(node.get("title"));
-        String description = extractText(node.get("descriptionSnippet"));
-        String publishedTime = extractText(node.get("publishedTimeText"));
-        String duration = extractText(node.get("lengthText"));
-        String thumbnailUrl = extractFirstThumbnailUrl(node.get("thumbnail"));
-        boolean membersOnly = hasBadgeLabel(node.get("badges"), "Members only");
-        boolean verified = hasBadgeLabel(node.get("ownerBadges"), "Verified");
 
-        if (id == null && title == null) {
-            return null;
-        }
-
-        return new Video(
-                id,
-                title,
-                description,
-                publishedTime,
-                duration,
-                thumbnailUrl,
-                membersOnly,
-                verified
-        );
-    }
 
     /**
      * Reads a direct text value from a field when that field exists and is not null.
@@ -375,102 +561,24 @@ public final class YoutubeClient {
     }
 
     /**
-     * Extracts user-visible text from common YouTube text shapes such as
-     * {@code simpleText}, {@code runs}, or accessibility labels.
+     * Returns the first non-blank value from the supplied candidates.
      */
-    private String extractText(JsonNode node) {
-        if (node == null || node.isMissingNode() || node.isNull()) {
+    private String firstNonBlank(String... values) {
+        if (values == null) {
             return null;
         }
 
-        // YouTube uses multiple text representations depending on renderer type.
-        JsonNode simpleText = node.get("simpleText");
-        if (simpleText != null && !simpleText.isNull()) {
-            return simpleText.asText();
-        }
-
-        JsonNode runs = node.get("runs");
-        if (runs != null && runs.isArray() && !runs.isEmpty()) {
-            StringBuilder builder = new StringBuilder();
-            for (JsonNode run : runs) {
-                JsonNode text = run.get("text");
-                if (text != null && !text.isNull()) {
-                    if (!builder.isEmpty()) {
-                        builder.append(' ');
-                    }
-                    builder.append(text.asText());
-                }
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                return value;
             }
-
-            return builder.isEmpty() ? null : builder.toString();
-        }
-
-        JsonNode accessibilityLabel = node.path("accessibility")
-                .path("accessibilityData")
-                .path("label");
-        if (!accessibilityLabel.isMissingNode() && !accessibilityLabel.isNull()) {
-            return accessibilityLabel.asText();
         }
 
         return null;
     }
 
-    /**
-     * Returns the first thumbnail URL from a YouTube thumbnail block.
-     */
-    private String extractFirstThumbnailUrl(JsonNode thumbnailNode) {
-        if (thumbnailNode == null || thumbnailNode.isMissingNode() || thumbnailNode.isNull()) {
-            return null;
-        }
 
-        JsonNode thumbnails = thumbnailNode.get("thumbnails");
-        if (thumbnails == null || !thumbnails.isArray() || thumbnails.isEmpty()) {
-            return null;
-        }
 
-        JsonNode firstThumbnail = thumbnails.get(0);
-        if (firstThumbnail == null || firstThumbnail.isNull()) {
-            return null;
-        }
-
-        JsonNode url = firstThumbnail.get("url");
-        return url == null || url.isNull() ? null : url.asText();
-    }
-
-    /**
-     * Checks whether a badge array contains a renderer whose visible or accessible
-     * label matches the expected value.
-     */
-    private boolean hasBadgeLabel(JsonNode badgesNode, String expectedLabel) {
-        if (badgesNode == null || badgesNode.isMissingNode() || !badgesNode.isArray()) {
-            return false;
-        }
-
-        for (JsonNode badge : badgesNode) {
-            JsonNode renderer = badge.get("metadataBadgeRenderer");
-            if (renderer == null || renderer.isNull()) {
-                continue;
-            }
-
-            JsonNode label = renderer.get("label");
-            if (label != null && !label.isNull() && expectedLabel.equals(label.asText())) {
-                return true;
-            }
-
-            JsonNode accessibilityLabel = renderer.path("accessibilityData").path("label");
-            if (!accessibilityLabel.isMissingNode() && !accessibilityLabel.isNull()
-                    && expectedLabel.equals(accessibilityLabel.asText())) {
-                return true;
-            }
-
-            JsonNode tooltip = renderer.get("tooltip");
-            if (tooltip != null && !tooltip.isNull() && expectedLabel.equals(tooltip.asText())) {
-                return true;
-            }
-        }
-
-        return false;
-    }
 
     /**
      * Resolves the continuation payload needed for the next ajax request.
@@ -503,14 +611,127 @@ public final class YoutubeClient {
         );
     }
 
+    // (collectSortCandidatesByLabel, collectSortCandidatesByLabelRecursive, extractSortCandidateLabel,
+    //  extractContinuationDataFromSortCandidate, findContinuationDataRecursively) methods removed.
+
+    /**
+     * Extracts continuation data when both required fields live on the same node.
+     */
+    private ContinuationData continuationDataFromNode(JsonNode node) {
+        if (node == null || node.isMissingNode() || node.isNull()) {
+            return null;
+        }
+
+        JsonNode continuationCommand = node.get("continuationCommand");
+        JsonNode clickTrackingParams = node.get("clickTrackingParams");
+
+        if (continuationCommand == null || clickTrackingParams == null) {
+            return null;
+        }
+
+        String token = continuationCommand.path("token").asText(null);
+        String tracking = clickTrackingParams.asText(null);
+
+        if (token == null || token.isBlank() || tracking == null || tracking.isBlank()) {
+            return null;
+        }
+
+        return new ContinuationData(token, tracking);
+    }
+
+    /**
+     * Extracts continuation data from a command list such as
+     * commandExecutorCommand.commands.
+     */
+    private ContinuationData continuationDataFromCommandList(JsonNode commands) {
+        if (commands == null || commands.isMissingNode() || !commands.isArray()) {
+            return null;
+        }
+
+        for (JsonNode command : commands) {
+            ContinuationData continuationData = continuationDataFromNode(command);
+            if (continuationData != null) {
+                return continuationData;
+            }
+        }
+
+        return null;
+    }
+    /**
+     * Resolves sort continuation data from chip-based sort controls.
+     */
+    private ContinuationData findSortContinuationInChipViewModels(JsonNode data, String expectedLabel) {
+        List<JsonNode> chips = JsonNavigator.findAll(data, "chipViewModel");
+        for (JsonNode chip : chips) {
+            String label = firstNonBlank(
+                    textAt(chip, "accessibilityLabel"),
+                    textAt(chip, "text"),
+                    new YoutubeTextNode(chip.get("title")).text()
+            );
+
+            if (!expectedLabel.equals(label)) {
+                continue;
+            }
+
+            JsonNode commandRoot = chip.path("tapCommand").path("innertubeCommand");
+
+            ContinuationData direct = continuationDataFromNode(commandRoot);
+            if (direct != null) {
+                return direct;
+            }
+
+            ContinuationData nested = continuationDataFromCommandList(
+                    commandRoot.path("commandExecutorCommand").path("commands")
+            );
+            if (nested != null) {
+                return nested;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Resolves sort continuation data from sheet/list style sort controls.
+     */
+    private ContinuationData findSortContinuationInListItemViewModels(JsonNode data, String expectedLabel) {
+        List<JsonNode> items = JsonNavigator.findAll(data, "listItemViewModel");
+        for (JsonNode item : items) {
+            String label = firstNonBlank(
+                    textAt(item.path("title"), "content"),
+                    textAt(item, "accessibilityLabel"),
+                    new YoutubeTextNode(item.get("title")).text(),
+                    new YoutubeTextNode(item.get("text")).text()
+            );
+
+            if (!expectedLabel.equals(label)) {
+                continue;
+            }
+
+            JsonNode commandRoot = item.path("rendererContext")
+                    .path("commandContext")
+                    .path("onTap")
+                    .path("innertubeCommand");
+
+            ContinuationData direct = continuationDataFromNode(commandRoot);
+            if (direct != null) {
+                return direct;
+            }
+
+            ContinuationData nested = continuationDataFromCommandList(
+                    commandRoot.path("commandExecutorCommand").path("commands")
+            );
+            if (nested != null) {
+                return nested;
+            }
+        }
+
+        return null;
+    }
+
     /**
      * Extracts the continuation token for a channel sort option such as
      * {@code Popular} or {@code Oldest}.
-     *
-     * <p>YouTube currently exposes these sort actions through list item view models
-     * rather than the older chip renderer structure, so this method matches the
-     * desired label and then scans the embedded command list for a
-     * {@code continuationCommand}.
      */
     private ContinuationData getSortContinuationData(JsonNode data, ChannelSort sortBy) {
         String expectedLabel = switch (sortBy) {
@@ -519,39 +740,22 @@ public final class YoutubeClient {
             default -> throw new IllegalStateException("Unexpected value: " + sortBy);
         };
 
-        // Search all sort menu entries and match the human-readable label.
-        List<JsonNode> items = JsonNavigator.findAll(data, "listItemViewModel");
-        for (JsonNode item : items) {
-            String label = item.path("title").path("content").asText(null);
-            if (!expectedLabel.equals(label)) {
-                continue;
-            }
-
-            // The selected sort action stores its continuation inside a nested command list.
-            JsonNode commands = item.path("rendererContext")
-                    .path("commandContext")
-                    .path("onTap")
-                    .path("innertubeCommand")
-                    .path("commandExecutorCommand")
-                    .path("commands");
-
-            if (!commands.isArray()) {
-                continue;
-            }
-
-            for (JsonNode command : commands) {
-                JsonNode continuationCommand = command.get("continuationCommand");
-                JsonNode clickTrackingParams = command.get("clickTrackingParams");
-
-                if (continuationCommand != null && clickTrackingParams != null) {
-                    return new ContinuationData(
-                            continuationCommand.path("token").asText(),
-                            clickTrackingParams.asText()
-                    );
-                }
-            }
+        ContinuationData fromChipViewModel = findSortContinuationInChipViewModels(data, expectedLabel);
+        if (fromChipViewModel != null) {
+            return fromChipViewModel;
         }
 
-        return null;
+        ContinuationData fromListItemViewModel = findSortContinuationInListItemViewModels(data, expectedLabel);
+        if (fromListItemViewModel != null) {
+            return fromListItemViewModel;
+        }
+
+        throw new IllegalStateException("Could not resolve continuation data for sort option with label: " + expectedLabel);
+    }
+
+    private record SelectorItemMatch(String selectorItem, List<JsonNode> items) {
+        private static SelectorItemMatch empty() {
+            return new SelectorItemMatch(null, List.of());
+        }
     }
 }

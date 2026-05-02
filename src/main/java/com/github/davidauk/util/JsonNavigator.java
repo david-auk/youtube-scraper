@@ -9,8 +9,7 @@ import java.util.List;
 
 public final class JsonNavigator {
 
-    private JsonNavigator() {
-    }
+    private JsonNavigator() {}
 
     public static List<JsonNode> findAll(JsonNode root, String searchKey) {
         List<JsonNode> results = new ArrayList<>();
