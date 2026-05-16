@@ -15,6 +15,8 @@ import com.github.davidauk.youtubescraper.selector.WatchPageSelectorItemNode;
 import com.github.davidauk.youtubescraper.util.HtmlJsonExtractor;
 import com.github.davidauk.youtubescraper.util.JsonNavigator;
 
+import org.slf4j.Logger;
+
 import java.io.IOException;
 import java.net.ProxySelector;
 import java.time.Duration;
@@ -26,13 +28,24 @@ public final class YoutubeClient {
         private static final String BROWSE_API_ENDPOINT = "https://www.youtube.com/youtubei/v1/browse";
         private static final int MAX_EMPTY_CONTINUATION_PAGES = 2;
         private final ObjectMapper objectMapper;
+        private final Logger logger;
 
         /**
          * Creates a new client instance with its own {@link ObjectMapper} for parsing
          * YouTube HTML-embedded JSON responses and ajax browse payloads.
          */
         public YoutubeClient() {
+                this(null);
+        }
+
+        /**
+         * Creates a new client instance with optional diagnostic logging.
+         *
+         * @param logger optional logger used to compare response/parsing behavior between environments
+         */
+        public YoutubeClient(Logger logger) {
                 this.objectMapper = new ObjectMapper();
+                this.logger = logger;
         }
 
         /**
@@ -45,6 +58,13 @@ public final class YoutubeClient {
          */
         public ChannelOverviewResponse getChannel(ChannelId channelId, ChannelRequest request) throws IOException, InterruptedException {
                 List<PartialVideoSelectorItemNode> channelResponse = getChannelItems(channelId, request);
+                debug("Fetched {} raw channel items for channelId={}, contentType={}, sortBy={}, limit={}",
+                        channelResponse.size(),
+                        channelId,
+                        request.contentType(),
+                        request.sortBy(),
+                        request.limit()
+                );
 
                 Channel channel = getChannelMetadata(channelId, request.proxySelector());
 
@@ -93,6 +113,7 @@ public final class YoutubeClient {
                 String url = channelId.baseUrl();
 
                 String html = session.get(url);
+                debugHtmlResponse("channel metadata", url, html);
                 validateYoutubeHtmlResponse(html, url);
 
                 JsonNode initialData = objectMapper.readTree(
@@ -113,6 +134,7 @@ public final class YoutubeClient {
          */
         private String extractChannelTitle(JsonNode initialData) {
                 JsonNode metadata = JsonNavigator.findFirst(initialData, "channelMetadataRenderer");
+                debugNodePresence("channelMetadataRenderer", metadata);
                 if (metadata != null) {
                         String title = firstNonBlank(
                                 textAt(metadata, "title"),
@@ -314,16 +336,20 @@ public final class YoutubeClient {
 
         public WatchPageNode getWatchPage(String videoId) throws IOException, InterruptedException {
                 YoutubeHttpClient session = new YoutubeHttpClient(null);
+                String url = "https://www.youtube.com/watch?v=" + videoId;
 
-                String html = session.get("https://www.youtube.com/watch?v=" + videoId);
+                String html = session.get(url);
+                debugHtmlResponse("watch page", url, html);
 
                 JsonNode initialData = objectMapper.readTree(
                         HtmlJsonExtractor.extract(html, "var ytInitialData = ", 0, "};") + "}"
                 );
+                logWatchPageShape("ytInitialData", videoId, initialData);
 
                 JsonNode playerResponse = objectMapper.readTree(
                         HtmlJsonExtractor.extract(html, "var ytInitialPlayerResponse = ", 0, "};") + "}"
                 );
+                logPlayerResponseShape(videoId, playerResponse);
 
                 return new WatchPageNode(videoId, initialData, playerResponse);
         }
@@ -402,6 +428,7 @@ public final class YoutubeClient {
                                 isFirst = false;
 
                                 String html = session.get(url);
+                                debugHtmlResponse("selector page", url, html);
                                 validateYoutubeHtmlResponse(html, url);
 
                                 client = objectMapper.readTree(
@@ -410,6 +437,12 @@ public final class YoutubeClient {
 
                                 apiKey = HtmlJsonExtractor.extract(html, "innertubeApiKey", 3, "\"");
                                 session.setYoutubeClientVersion(client.get("clientVersion").asText());
+                                debug("Resolved YouTube client metadata for url={}: clientName={}, clientVersion={}, apiKeyPresent={}",
+                                        url,
+                                        textAt(client, "clientName"),
+                                        textAt(client, "clientVersion"),
+                                        apiKey != null && !apiKey.isBlank()
+                                );
 
                                 JsonNode initialData = objectMapper.readTree(
                                         HtmlJsonExtractor.extract(html, "var ytInitialData = ", 0, "};") + "}"
@@ -419,6 +452,7 @@ public final class YoutubeClient {
                                 if (data == null) {
                                         throw new IllegalStateException("Could not find selector list: " + selectorList);
                                 }
+                                debug("Found selector list '{}' for url={} with selectors={}", selectorList, url, selectorItems);
 
                                 validateInitialContentTree(data, selectorList, selectorItems, url);
 
@@ -443,6 +477,7 @@ public final class YoutubeClient {
                                 // Follow-up iterations use continuation-based ajax responses instead of
                                 // re-downloading the entire page HTML.
                                 data = getAjaxData(session, apiKey, nextData, client);
+                                debug("Fetched ajax continuation for url={} with responseFields={}", url, fieldNames(data));
                                 validateAjaxContentTree(data, selectorItems, url);
                                 nextData = getNextData(data, null);
                         }
@@ -451,6 +486,12 @@ public final class YoutubeClient {
                         // The selector list is ordered by preference. For example, streams may
                         // primarily use videoRenderer, but sometimes YouTube returns lockupViewModel.
                         List<PartialVideoSelectorItemNode> items = findFirstMatchingSelectorItems(data, selectorItems);
+                        debug("Selector extraction for url={} found {} items using selectors={}; totalResultsBeforeAdd={}",
+                                url,
+                                items.size(),
+                                selectorItems,
+                                results.size()
+                        );
                         for (PartialVideoSelectorItemNode item : items) {
                                 results.add(item);
                                 if (limit != null && results.size() >= limit) {
@@ -488,6 +529,7 @@ public final class YoutubeClient {
          */
         private List<PartialVideoSelectorItemNode> findFirstMatchingSelectorItems(JsonNode data, List<String> selectorItems) {
                 SelectorItemMatch match = findFirstMatchingItems(data, selectorItems);
+                debug("First matching selector: selector={}, itemCount={}", match.selectorItem(), match.items().size());
                 if (match.items().isEmpty()) {
                         return List.of();
                 }
@@ -625,7 +667,91 @@ public final class YoutubeClient {
                 requestBody.put("continuation", nextData.token());
 
                 String responseBody = session.postJson(YoutubeClient.BROWSE_API_ENDPOINT, apiKey, objectMapper.writeValueAsString(requestBody));
+                debug("Ajax response received from {}: bodyLength={}", YoutubeClient.BROWSE_API_ENDPOINT, responseBody == null ? 0 : responseBody.length());
                 return objectMapper.readTree(responseBody);
+        }
+        // === Logging and debug helpers ===
+
+        private void debug(String message, Object... arguments) {
+                if (logger != null && logger.isDebugEnabled()) {
+                        logger.debug(message, arguments);
+                }
+        }
+
+        private void warn(String message, Object... arguments) {
+                if (logger != null && logger.isWarnEnabled()) {
+                        logger.warn(message, arguments);
+                }
+        }
+
+        private void debugHtmlResponse(String context, String url, String html) {
+                if (logger == null || !logger.isDebugEnabled()) {
+                        return;
+                }
+
+                String lowerHtml = html == null ? "" : html.toLowerCase();
+                logger.debug(
+                        "YouTube {} response for url={}: htmlLength={}, hasYtInitialData={}, hasPlayerResponse={}, hasInnertubeContext={}, hasConsentMarker={}, hasUnusualTrafficMarker={}",
+                        context,
+                        url,
+                        html == null ? 0 : html.length(),
+                        html != null && html.contains("ytInitialData"),
+                        html != null && html.contains("ytInitialPlayerResponse"),
+                        html != null && html.contains("INNERTUBE_CONTEXT"),
+                        lowerHtml.contains("consent.youtube.com") || lowerHtml.contains("before you continue to youtube"),
+                        lowerHtml.contains("our systems have detected unusual traffic")
+                                || lowerHtml.contains("detected unusual traffic from your computer network")
+                                || lowerHtml.contains("/sorry/index")
+                );
+        }
+
+        private void debugNodePresence(String label, JsonNode node) {
+                debug("Node presence: {} present={}, fields={}", label, isPresent(node), fieldNames(node));
+        }
+
+        private void logWatchPageShape(String label, String videoId, JsonNode node) {
+                debugNodePresence(label, node);
+                debugNodePresence("videoPrimaryInfoRenderer", JsonNavigator.findFirst(node, "videoPrimaryInfoRenderer"));
+                debugNodePresence("videoSecondaryInfoRenderer", JsonNavigator.findFirst(node, "videoSecondaryInfoRenderer"));
+                debugNodePresence("videoDetails", JsonNavigator.findFirst(node, "videoDetails"));
+                debugNodePresence("playerMicroformatRenderer", JsonNavigator.findFirst(node, "playerMicroformatRenderer"));
+
+                if (JsonNavigator.findFirst(node, "videoPrimaryInfoRenderer") == null) {
+                        warn("Watch page ytInitialData for videoId={} does not contain videoPrimaryInfoRenderer. This often means YouTube returned a different page shape on this environment.", videoId);
+                }
+        }
+
+        private void logPlayerResponseShape(String videoId, JsonNode playerResponse) {
+                debugNodePresence("ytInitialPlayerResponse", playerResponse);
+                debugNodePresence("ytInitialPlayerResponse.videoDetails", playerResponse == null ? null : playerResponse.get("videoDetails"));
+                debugNodePresence("ytInitialPlayerResponse.microformat", playerResponse == null ? null : playerResponse.get("microformat"));
+
+                String status = playerResponse == null
+                        ? null
+                        : playerResponse.path("playabilityStatus").path("status").asText(null);
+                String reason = playerResponse == null
+                        ? null
+                        : playerResponse.path("playabilityStatus").path("reason").asText(null);
+
+                debug("Player response playability for videoId={}: status={}, reason={}", videoId, status, reason);
+
+                if (status != null && !"OK".equals(status)) {
+                        warn("Player response for videoId={} has non-OK playability status: status={}, reason={}", videoId, status, reason);
+                }
+        }
+
+        private boolean isPresent(JsonNode node) {
+                return node != null && !node.isMissingNode() && !node.isNull();
+        }
+
+        private List<String> fieldNames(JsonNode node) {
+                if (!isPresent(node) || !node.isObject()) {
+                        return List.of();
+                }
+
+                List<String> names = new ArrayList<>();
+                node.fieldNames().forEachRemaining(names::add);
+                return names;
         }
 
 
